@@ -1,27 +1,35 @@
+from __future__ import annotations
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from typing import Literal
 import pymap3d
 import torch
 import hashlib
-from typing import Literal
 from pydantic import BaseModel, Field
 
 
 class ObjectAttr(BaseModel):
     pass
 
+
 class AircraftAttr(ObjectAttr):
     Name: str = "F-16C-52"
-    Color: Literal["Red", "Blue"]
+    Color: Literal["Red", "Blue"] | str
     TAS: float | None = None
     AOA: float | None = None
 
+
 class MissileAttr(ObjectAttr):
     Name: str = "AIM_9"
-    Color: Literal["Red", "Blue"]
+    Color: Literal["Red", "Blue"] | str
     TAS: float
     Radius: float | None = None
-    
+
+
 class DecoyAttr(ObjectAttr):
     Type: str = "Misc+Decoy+Flare"
+
 
 class WaypointAttr(ObjectAttr):
     Type: str = "Navaid+Static+Waypoint"
@@ -31,17 +39,20 @@ class WaypointAttr(ObjectAttr):
         super().__init__(**data)
         self.Next = get_obj_id(name)  # 使用 get_obj_id 生成 Next 属性
 
+
 class TacviewEvent(BaseModel):
     EventName: Literal["Message", "Bookmark", "Destroyed"]
     FirstObjectName: str | None = None
     SecondObjectName: str | None = None
     EventText: str | None = None
 
+
 def get_obj_id(obj_name: str):
     hash_md5 = hashlib.md5(obj_name.encode())
     hash_value = hash_md5.hexdigest()
     hex_value = hash_value[:7]
     return hex_value.upper()
+
 
 class ObjectState:
     def __init__(
@@ -50,7 +61,7 @@ class ObjectState:
         name: str,
         attr: ObjectAttr | AircraftAttr | MissileAttr,
         pos_ned: torch.Tensor,
-        rpy_rad: torch.Tensor | None = None
+        rpy_rad: torch.Tensor | None = None,
     ):
         self.sim_time_s = sim_time_s
         self.id = get_obj_id(name)
