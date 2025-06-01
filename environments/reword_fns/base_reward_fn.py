@@ -1,8 +1,16 @@
-import torch
-from typing import TYPE_CHECKING, Sequence
-from abc import ABC, abstractmethod
+from __future__ import annotations
+from typing import TYPE_CHECKING
+
 if TYPE_CHECKING:
-    from environments.navigation import NavigationEnv
+    from ..navigation import NavigationEnv
+    from ..evasion import EvasionEnv
+
+import torch
+from abc import ABC, abstractmethod
+
+from typing import Union, Sequence, TypeVar
+
+IndexLike = TypeVar("IndexLike", Sequence[int], slice, torch.Tensor)
 
 
 class BaseRewardFn(ABC):
@@ -10,9 +18,12 @@ class BaseRewardFn(ABC):
         super().__init__()
 
     @abstractmethod
-    def reset(self, env: "NavigationEnv", env_indices: Sequence[int] | torch.Tensor | None = None, **kwargs) -> None:
-        ...
+    def reset(
+        self,
+        env: NavigationEnv | EvasionEnv,
+        env_indices: IndexLike = None,
+        **kwargs,
+    ) -> None: ...
 
     @abstractmethod
-    def __call__(self, env: "NavigationEnv", **kwargs) -> torch.Tensor:
-        ...
+    def __call__(self, env: NavigationEnv | EvasionEnv, **kwargs) -> torch.Tensor: ...
