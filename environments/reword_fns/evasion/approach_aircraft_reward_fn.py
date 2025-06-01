@@ -15,7 +15,7 @@ class ApproachNavigationPointRewardFn(BaseRewardFn):
         pass
         
     def __call__(self, env: "EvasionEnv", **kwargs) -> torch.Tensor:
-        r = env.missile.target.position_g-env.missile.position_g
-        v = env.missile.velocity_g
+        r = env.missile.target.position_e-env.missile.position_e
+        v = env.missile.velocity_e
         v_proj = torch.einsum("ij,ij->i", [v, r])/torch.norm(r, p=2, dim=-1)
         return -1*self.weight*v_proj.unsqueeze(-1)

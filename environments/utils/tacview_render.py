@@ -1,8 +1,5 @@
 from __future__ import annotations
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from typing import Literal
+from typing import TYPE_CHECKING, Literal
 import pymap3d
 import torch
 import hashlib

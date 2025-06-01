@@ -1,26 +1,13 @@
 import torch
 
 
-def quat_split(q: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-    """Split a quaternion into real and imaginary parts.
-
-    Args:
-        q: The quaternion in (w, x, y, z). Shape is (..., 4).
-
-    Returns:
-        Re(q): 实部, shape is (..., 1).
-        Im(q): 虚部, shape is (..., 3).
-    """
-    reQ, imQ = q.split([1, 3], dim=-1)
-    return reQ, imQ
-
-
-
-
 def main():
-    q = torch.randn((2, 2, 22, 4), dtype=torch.float32)
-    w, v = quat_split(q)
-    print(w.shape, v.shape)
+
+    q = torch.randn((8, 4), dtype=torch.float32)
+    print(q)
+    idxs = torch.arange(4)
+    q[idxs, 0].fill_(1.0)
+    print(q)
     return
 
 

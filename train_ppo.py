@@ -1,7 +1,7 @@
 import time
 import torch
 from pathlib import Path
-from torch.utils.tensorboard import SummaryWriter
+from torch.utils.tensorboard.writer import SummaryWriter
 from tqdm import tqdm
 from environments import NavigationEnv, EvasionEnv
 from agents import PPOContinuous
@@ -101,16 +101,22 @@ def main():
 
         # 存储智能体
         if progress_bar.n % 10000 == 0:
-            torch.save(agent.actor, "actor.pt")
-            torch.save(agent.actor.state_dict(), "actor.pth")
+            torch.save(agent.actor, RESULTS_DIR / "actor.pt")
+            torch.save(agent.actor.state_dict(), RESULTS_DIR / "actor.pth")
 
         # obs_norm = normalize(obs, low, high)
         act, act_log_prob = agent.choose_action(obs)
 
-        obs_next, rew, terminated, truncated, _ = train_env.step(act, progress_bar.n)
+        obs_next, rew, terminated, truncated, _ = train_env.step(act)
         train_env.render()
         agent.post_act(
-            obs_next, act, act_log_prob, rew, terminated, truncated, progress_bar.n
+            obs_next,
+            act,
+            act_log_prob,
+            rew,
+            terminated,
+            truncated,
+            global_step=progress_bar.n,
         )
 
         obs = obs_next

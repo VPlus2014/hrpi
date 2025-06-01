@@ -19,11 +19,12 @@ from .utils.space import space2box, flatten, unflatten
 from .utils.math import (
     quat_enu_ned,
     quat_rotate,
-    quat_rotate_inverse,
+    quat_rotate_inv,
     euler_from_quat,
     Qx,
     quat_mul,
     ned2aer,
+    vec_cosine,
 )
 from environments.utils.tacview_render import ObjectState, AircraftAttr, MissileAttr
 from environments.reword_fns import (
@@ -199,44 +200,29 @@ class EvasionEnv(gymnasium.Env):
             data = data.cpu().numpy()
         return data
 
-    def reset(self, env_indices: Sequence[int] | torch.Tensor | None = None):
-        if env_indices is None:
-            env_indices = torch.arange(self.num_envs, device=self.device)
-        elif isinstance(env_indices, Sequence):
-            # check indices
-            index_max = max(env_indices)
-            index_min = min(env_indices)
-            assert index_max < self.num_envs, index_min >= 0
-            env_indices = torch.tensor(env_indices, device=self.device)
 
-        elif isinstance(env_indices, torch.Tensor):
-            # check indices
-            assert len(env_indices.shape) == 1
-            env_indices = env_indices.to(device=self.device)
-            index_max = env_indices.max().item()
-            index_min = env_indices.min().item()
-            assert index_max < self.num_envs, index_min >= 0
+    def reset(self, env_indices: Sequence[int] | torch.Tensor | None = None):
+        env_indices = self.proc_indices(env_indices)
 
         # reset aircraft model
-        self.aircraft.reset(env_indices)
-        self.aircraft.activate(env_indices)
+        pln = self.aircraft
+        pln.reset(env_indices)
+        pln.activate(env_indices)
 
         # reset missile model
-        self.missile.reset(env_indices)
+        mis = self.missile
+        mis.reset(env_indices)
         random_vals = torch.rand(len(env_indices), 3)
         positions = self.position_min_limit + random_vals * (
             self.position_max_limit - self.position_min_limit
         )
-        self.missile.position_g[env_indices] = positions.to(device=self.device)
+        mis.position_e[env_indices] = positions.to(device=self.device)
 
-        aer = ned2aer(
-            self.missile.target.position_g[env_indices]
-            - self.missile.position_g[env_indices]
-        )
-        self.missile.set_q_gk(
-            gamma=aer[..., 1:2], chi=aer[..., 0:1], env_indices=env_indices
-        )
-        self.missile.launch(env_indices)
+        aer = ned2aer(mis.target.position_e[env_indices] - mis.position_e[env_indices])
+        mis.set_yaw(env_indices, aer[..., 0:1])
+        mis.set_pitch(env_indices, aer[..., 1:2])
+
+        mis.launch(env_indices)
 
         # ====reset simulation variables====#
         self.__sim_time_ms[env_indices] = 0.0
@@ -295,8 +281,8 @@ class EvasionEnv(gymnasium.Env):
 
             # missile simulation step
             n_cmd = self._png(
-                target_position_e=self.aircraft.position_g,
-                target_velocity_e=self.aircraft.velocity_g,
+                target_position_e=self.aircraft.position_e,
+                target_velocity_e=self.aircraft.velocity_e,
             )
             self.missile.run(n_cmd)
 
@@ -352,14 +338,14 @@ class EvasionEnv(gymnasium.Env):
     def _png(
         self, target_position_e: torch.Tensor, target_velocity_e: torch.Tensor
     ) -> torch.Tensor:
-        dp = target_position_e - self.missile.position_g  # LOS (...,3)
-        dv = target_velocity_e - self.missile.velocity_g  # relative velocity (...,3)
+        dp = target_position_e - self.missile.position_e  # LOS (...,3)
+        dv = target_velocity_e - self.missile.velocity_e  # relative velocity (...,3)
         dem = dp.square().sum(dim=-1, keepdim=True).clip(min=1e-6)  # distance^2 (...,1)
         omega = torch.cross(dp, dv, dim=-1) / dem
         ad_g = self.missile._N * torch.cross(
             dv, omega, dim=-1
         )  # required acceleration in earth frame (...,3)
-        a_f = quat_rotate(self.missile.Qgk, ad_g)
+        a_f = quat_rotate(self.missile.Q_ea, ad_g)
 
         return torch.clip(
             a_f[..., 1:] / self.missile._g,
@@ -379,13 +365,13 @@ class EvasionEnv(gymnasium.Env):
                 Color=self.aircraft.model_color,
                 TAS=self.aircraft.tas[0].item(),
             ),
-            pos_ned=self.aircraft.position_g[0].clone().cpu(),
+            pos_ned=self.aircraft.position_e[0].clone().cpu(),
             rpy_rad=euler.cpu(),
         )
         self.__objects_states.append(aircraft_state)
 
         # missile
-        euler = euler_from_quat(self.missile.Qgk[0])
+        euler = euler_from_quat(self.missile.Q_ea[0])
         euler[0] = 0.0
 
         missile_state = ObjectState(
@@ -395,7 +381,7 @@ class EvasionEnv(gymnasium.Env):
                 Color=self.missile.model_color,
                 TAS=self.missile.tas[0].item(),
             ),
-            pos_ned=self.missile.position_g[0].clone().cpu(),
+            pos_ned=self.missile.position_e[0].clone().cpu(),
             rpy_rad=euler.cpu(),
         )
         self.__objects_states.append(missile_state)
@@ -457,10 +443,10 @@ class EvasionEnv(gymnasium.Env):
             assert index_max < self.num_envs, index_min >= 0
 
         obs_dict = OrderedDict()
-        obs_dict["aircraft_position_g"] = self.aircraft.position_g[
+        obs_dict["aircraft_position_g"] = self.aircraft.position_e[
             env_indices
         ]  # 局部地轴系坐标
-        obs_dict["aircraft_velocity_g"] = self.aircraft.velocity_g[
+        obs_dict["aircraft_velocity_g"] = self.aircraft.velocity_e[
             env_indices
         ]  # 局部地轴系速度
         obs_dict["aircraft_tas"] = self.aircraft.tas[env_indices]  # 真空速
@@ -471,8 +457,8 @@ class EvasionEnv(gymnasium.Env):
         obs_dict["aircraft_gamma"] = gamma[env_indices]
         obs_dict["aircraft_mu"] = self.aircraft.mu[env_indices]
         obs_dict["aircraft_alpha"] = self.aircraft.alpha[env_indices]
-        obs_dict["missile_position_g"] = self.missile.position_g[env_indices]
-        obs_dict["missile_velocity_e"] = self.missile.velocity_g[env_indices]
+        obs_dict["missile_position_g"] = self.missile.position_e[env_indices]
+        obs_dict["missile_velocity_e"] = self.missile.velocity_e[env_indices]
 
         return obs_dict
 

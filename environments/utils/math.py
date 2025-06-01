@@ -1,6 +1,10 @@
-# 250601
+# 250601 飞仿相关张量运算扩展
 from __future__ import annotations
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from typing_extensions import TypeAlias
+from typing import Sequence, Callable, Union
 import torch
 
 _stack = torch.stack
@@ -12,6 +16,8 @@ _cos = torch.cos
 _atan2 = torch.atan2
 _asin = torch.asin
 _where = torch.where
+
+_PI = torch.pi
 
 
 def affcmb(
@@ -38,7 +44,7 @@ def affcmb(
 
 @torch.jit.script
 def _normalize(x: torch.Tensor, eps: float = 1e-9) -> torch.Tensor:
-    return x / x.norm(p=2, dim=-1, keepdim=True).clip(eps)
+    return x / x.norm(dim=-1, p=2, keepdim=True).clip(eps)
 
 
 @torch.jit.script
@@ -244,7 +250,7 @@ def _rpy2mat_inv(Reb: torch.Tensor, roll_ref_rad: torch.Tensor):
 
 @torch.jit.script
 def _quat_norm(q: torch.Tensor) -> torch.Tensor:
-    return q.norm(p=2, dim=-1, keepdim=True)
+    return q.norm(dim=-1, p=2, keepdim=True)
 
 
 @torch.jit.script
@@ -289,7 +295,7 @@ def normalize(x: torch.Tensor, eps: float = 1e-9) -> torch.Tensor:
 
 
 def is_normalized(v: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
-    return ((v.norm(p=2, dim=-1, keepdim=True) - 1).abs() <= eps).all()
+    return ((v.norm(dim=-1, p=2, keepdim=True) - 1).abs() <= eps).all()
 
 
 @torch.jit.script
@@ -341,7 +347,7 @@ def quat_im(q: torch.Tensor) -> torch.Tensor:
     return _quat_im(q)
 
 
-def quat_conjugate(q: torch.Tensor) -> torch.Tensor:
+def quat_conj(q: torch.Tensor) -> torch.Tensor:
     """Computes the conjugate of a quaternion.
 
     Args:
@@ -545,8 +551,8 @@ def quat_rotate(q: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
     $$
 
     Args:
-        q: The quaternion in (w, x, y, z). shape: (..., 4).
-        v: The vector in (x, y, z). shape: (..., 3).
+        q: Normalized quaternion in (w, x, y, z). shape: (..., 4).
+        v: 3D vector in (x, y, z). shape: (..., 3).
 
     Returns:
         The rotated vector in (x, y, z). shape: (..., 3).
@@ -554,7 +560,7 @@ def quat_rotate(q: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
     return _quat_rot(q, v)
 
 
-def quat_rotate_inverse(q: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
+def quat_rotate_inv(q: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
     r"""Inverse rotate a vector by a quaternion along the last dimension of q and v.
 
     $$
@@ -562,8 +568,8 @@ def quat_rotate_inverse(q: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
     $$
 
     Args:
-        q: The quaternion in (w, x, y, z). shape: (..., 4).
-        v: The vector in (x, y, z). shape: (..., 3).
+        q: Normalized quaternion in (w, x, y, z). shape: (..., 4).
+        v: 3D vector in (x, y, z). shape: (..., 3).
 
     Returns:
         The rotated vector in (x, y, z). shape: (..., 3).
@@ -572,7 +578,7 @@ def quat_rotate_inverse(q: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
     # u = torch.bmm(rotation_matrix, v.unsqueeze(-1)).squeeze(-1)
 
     # assert is_normalized(q), "Quaternion must be normalized."
-    return quat_rotate(quat_conjugate(q), v)
+    return quat_rotate(quat_conj(q), v)
 
 
 def quat_enu_ned() -> torch.Tensor:
@@ -662,35 +668,92 @@ def euler_from_quat(
     return rpy2quat_inv(q, roll_ref_rad)
 
 
-def ned2aer(ned: torch.Tensor) -> torch.Tensor:
-    n, e, d = torch.unbind(ned, dim=-1)  # (...,)
-    rxy = torch.sqrt(torch.pow(e, 2) + torch.pow(n, 2))
-    slant_range = torch.norm(ned, p=2, dim=-1)
+def _xyz2aer(xyz: torch.Tensor) -> torch.Tensor:
+    x, y, z = torch.unbind(xyz, dim=-1)  # (...,)
+    rxy = torch.sqrt(torch.pow(y, 2) + torch.pow(x, 2))
+    slant_range = torch.norm(xyz, p=2, dim=-1)
 
     eps = 1e-6
     rxy_is_0 = rxy < eps
     az = torch.where(
         rxy_is_0,
-        torch.zeros_like(n),
-        torch.atan2(e, n),
-    )
+        torch.zeros_like(x),
+        torch.atan2(y, x),
+    )  # azimuth(yaw)
     elev = torch.where(
         rxy_is_0,
-        torch.sign(d) * -(torch.pi * 0.5),
-        torch.atan2(-d, rxy),
-    )
+        torch.sign(z) * -(torch.pi * 0.5),
+        torch.atan2(-z, rxy),
+    )  # elevation(pitch)
     return torch.stack([az, elev, slant_range], dim=-1)
 
 
-def aer2ned(aer: torch.Tensor) -> torch.Tensor:
-    a, e, r = torch.unbind(aer, dim=-1)
+def xyz2aer(xyz: torch.Tensor) -> torch.Tensor:
+    r"""求解 xyz 直角坐标对应的绕Z角a、绕Y角e、模长r\
+    (1,0,0) 按 绕Z旋转y-绕Y旋转p 得到 (x,y,z)
 
-    r_prime = r * torch.cos(e)
-    n = r_prime * torch.cos(a)
-    e = r_prime * torch.sin(a)
-    d = -r * torch.sin(e)
+    Args:
+        xyz (torch.Tensor): 直角坐标 shape: (...,3)
 
-    return torch.stack([n, e, d], dim=-1)
+    Returns:
+        torch.Tensor: (a,e,r) shape: (...,3)
+    """
+    return _xyz2aer(xyz)
+
+
+def aer2xyz(aer: torch.Tensor) -> torch.Tensor:
+    az, el, r = torch.split(aer, [1, 1, 1], -1)  # (...,1)
+
+    rxy = r * torch.cos(el)
+    z = -r * torch.sin(el)
+    x = rxy * torch.cos(az)
+    y = rxy * torch.sin(az)
+    return torch.cat([x, y, z], -1)
+
+
+ned2aer = xyz2aer
+aer2ned = aer2xyz
+
+
+@torch.jit.script
+def _vec_cosine(v1: torch.Tensor, v2: torch.Tensor, n1: torch.Tensor, n2: torch.Tensor):
+    eps = 1e-6
+    v1_is_zero = n1 < eps
+    v2_is_zero = n2 < eps
+    any_zero = v1_is_zero | v2_is_zero
+    c = torch.where(
+        any_zero,
+        torch.zeros_like(n1),
+        torch.sum(v1 * v2, -1, keepdim=True) / (n1 * n2),
+    )
+    return c
+
+
+def vec_cosine(
+    v1: torch.Tensor,
+    v2: torch.Tensor,
+    n1: torch.Tensor | float | None = None,
+    n2: torch.Tensor | float | None = None,
+):
+    """
+    计算两个向量的余弦值
+    $$
+    cos(v1,v2)=\frac{v1\cdot v2}{|v1||v2|}
+    $$
+    Args:
+        v1 (torch.Tensor): 向量1 shape: (...,3)
+        v2 (torch.Tensor): 向量2 shape: (...,3)
+        n1 (torch.Tensor|float|None): 向量1的长度 shape: (...,1) or scalar
+        n2 (torch.Tensor|float|None): 向量2的长度 shape: (...,1) or scalar
+
+    Returns:
+        torch.Tensor: 余弦值 shape: (...,1)
+    """
+    if n1 is None:
+        n1 = torch.norm(v1, p=2, dim=-1, keepdim=True)
+    if n2 is None:
+        n2 = torch.norm(v2, p=2, dim=-1, keepdim=True)
+    return _vec_cosine(v1, v2, n1, n2)
 
 
 def _herp(
@@ -831,6 +894,110 @@ def nlerp(q_0: torch.Tensor, q_1: torch.Tensor, t: torch.Tensor) -> torch.Tensor
     return q_t
 
 
+_DynamicsFuncType: TypeAlias = Union[
+    Callable[
+        [
+            torch.Tensor | float,  # $0 时间
+            Sequence[torch.Tensor | float],  # $1 状态
+        ],
+        Sequence[torch.Tensor | float],
+    ],
+    Callable,
+]
+
+
+def ode_rk45(
+    f: _DynamicsFuncType,
+    x0: Sequence[torch.Tensor],
+    t0: torch.Tensor | float,
+    dt: torch.Tensor | float,
+) -> list[torch.Tensor]:
+    """定步长 4阶 Runge-Kutta 法"""
+    dt_hf = dt * 0.5
+    t1 = t0 + dt_hf
+
+    w1 = f(t0, x0)
+    w2 = f(t1, [xi + dt_hf * wi for xi, wi in zip(x0, w1)])
+    w3 = f(t1, [xi + dt_hf * wi for xi, wi in zip(x0, w2)])
+    w4 = f(t0 + dt, [xi + dt * wi for xi, wi in zip(x0, w3)])
+
+    x_next = [
+        xi + dt / 6.0 * (wi1 + 2.0 * wi2 + 2.0 * wi3 + wi4)
+        for xi, wi1, wi2, wi3, wi4 in zip(x0, w1, w2, w3, w4)
+    ]
+    return x_next
+
+
+def ode_rk23(
+    f: _DynamicsFuncType,
+    x0: Sequence[torch.Tensor],
+    t0: torch.Tensor | float,
+    dt: torch.Tensor | float,
+) -> list[torch.Tensor]:
+    """定步长 2阶 Runge-Kutta 法（改进欧拉法）"""
+    dt_hf = dt * 0.5
+    t1 = t0 + dt_hf
+
+    w1 = f(t0, x0)
+    w2 = f(t1, [xi + dt_hf * wi for xi, wi in zip(x0, w1)])
+    x_next = [xi + dt_hf * (wi1 + wi2) for xi, wi1, wi2 in zip(x0, w1, w2)]
+    return x_next
+
+
+def ode_euler(
+    f: _DynamicsFuncType,
+    x0: Sequence[torch.Tensor],
+    t0: torch.Tensor | float,
+    dt: torch.Tensor | float,
+):
+    """
+    欧拉法
+    """
+    w1 = f(t0, x0)
+    x_next = [xi + dt * wi for xi, wi in zip(x0, w1)]
+    return x_next
+
+
+def modin(x: torch.Tensor, a: torch.Tensor | float, m: torch.Tensor | float):
+    r"""
+    a+((x-a) mod m)
+    if m=0, return a
+    if m>0, y $\in [a,a+m)$
+    if m<0, y $\in (a-m,a]$
+    """
+    if not (isinstance(a, torch.Tensor) and isinstance(m, torch.Tensor)):
+        _0 = torch.zeros_like(x)
+        if not isinstance(a, torch.Tensor):
+            a = _0 + a  # assert: 广播相容
+        if not isinstance(m, torch.Tensor):
+            m = _0 + m  # assert: 广播相容
+    y = torch.where(m == 0, a, (x - a) % m + a)
+    return y
+
+
+def delta_reg(a: torch.Tensor, b: torch.Tensor, r: torch.Tensor | float = _PI):
+    r"""
+    计算 a-b 在 R=(-r,r] 上的最小幅度值
+
+    即 $\argmin_{ d\in R=(-r,r]: d=a-b (mod |R|)} |d|$
+    """
+    # assert torch.all(r > 0), "r must be positive."
+    diam = r + r
+    d = modin(a - b, 0, diam)  # in [0,2r)
+    d = torch.where(d <= r, d, d - diam)  # in (-r,r]
+    return d
+
+
+def delta_deg_reg(a: torch.Tensor, b: torch.Tensor):
+    r"""$\argmin_{ d\in R=(-180,180]: d=a-b (mod |R|)} |d|$"""
+    return delta_reg(a, b, 180)
+
+
+def delta_rad_reg(a: torch.Tensor, b: torch.Tensor):
+    r"""$$\argmin_{ d\in R=(-pi,pi]: d=a-b (mod |R|)} |d|$"""
+    return delta_reg(a, b, _PI)
+
+
 def _demo():  # 自测
     from timeit import timeit
 
@@ -855,7 +1022,7 @@ def _demo():  # 自测
         r = quat_mul(p, q)
         return
 
-        qconj = quat_conjugate(q)
+        qconj = quat_conj(q)
         assert is_normalized(q), "Quaternion must be normalized."
         v = normalize(torch.rand([*bsz, 3], dtype=torch.float32))  # 单位球面测试
 

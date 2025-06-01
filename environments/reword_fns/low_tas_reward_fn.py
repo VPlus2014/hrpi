@@ -19,5 +19,5 @@ class LowAirSpeedRewardFn(BaseRewardFn):
         pass
 
     def __call__(self, env: "NavigationEnv", **kwargs) -> torch.Tensor:
-        reward = (env.aircraft.tas < self.min_airspeed_mps).detach()
+        reward = env.aircraft.tas < self.min_airspeed_mps
         return -1 * self.weight * reward

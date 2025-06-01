@@ -1,13 +1,14 @@
+from __future__ import annotations
+from typing import TYPE_CHECKING
 import torch
 import numpy as np
-from typing import Literal
 from collections.abc import Sequence
-from .base_missile import BaseModel, BaseMissile
+from .base_missile import BaseMissile
 from ..aircraft.base_aircraft import BaseAircraft
 
 # from .base_aircraft import BaseMissile
 from environments.utils.math import (
-    quat_rotate_inverse,
+    quat_rotate_inv,
     normalize,
     Qx,
     Qy,
@@ -46,15 +47,7 @@ class PointMassMissile(BaseMissile):
             (self.batchsize, 1), device=device, dtype=dtype
         )  # 航迹倾斜角
         self._Qgk = quat_mul(Qz(chi), Qy(gamma))
-        self._vel_g = torch.zeros(
-            (self.batchsize, 3), device=device, dtype=dtype
-        )  # ground velocity, unit: m/s, shape: (n,3)
-        self._ppgt_vk2vg()
-
-    @property
-    def Qgk(self) -> torch.Tensor:
-        """从航迹系到地轴系的四元数"""
-        return self._Qgk
+        self._ppgt_vb2ve()
 
     def set_q_gk(
         self,
@@ -68,82 +61,72 @@ class PointMassMissile(BaseMissile):
 
         gamma = gamma.to(device=device, dtype=dtype)
         chi = chi.to(device=device, dtype=dtype)
-        self.Qgk[env_indices] = quat_mul(Qz(chi), Qy(gamma))
+        self.Q_ea[env_indices] = quat_mul(Qz(chi), Qy(gamma))
 
     @property
     def m(self) -> torch.Tensor:
         return (
             self._m0
-            - torch.clamp(0.001 * self.sim_time_ms, max=self._t_thrust_s).unsqueeze(-1)
+            - torch.clamp(self.sim_time_s, max=self._t_thrust_s).unsqueeze(-1)
             * self._dm
         )
 
     @property
     def altitude_m(self) -> torch.Tensor:
-        return -1 * self.position_g[..., -1:]
+        return -1 * self.position_e[..., -1:]
 
     @property
     def velocity_k(self) -> torch.Tensor:
-        return self.velocity_a
+        return self.velocity_b
 
     @property
-    def velocity_g(self) -> torch.Tensor:
-        return self._vel_g
+    def velocity_e(self) -> torch.Tensor:
+        return self._vel_e
 
     def reset(self, env_indices: Sequence[int] | torch.Tensor | None = None):
-        if env_indices is None:
-            env_indices = torch.arange(self.batchsize, device=self.device)
-
-        elif isinstance(env_indices, Sequence):
-            # check indices
-            index_max = max(env_indices)
-            index_min = min(env_indices)
-            assert index_max < self.batchsize, index_min >= 0
-            env_indices = torch.tensor(env_indices, device=self.device)
-
-        elif isinstance(env_indices, torch.Tensor):
-            # check indices
-            assert len(env_indices.shape) == 1
-            env_indices = env_indices.to(device=self.device)
-            index_max = env_indices.max().item()
-            index_min = env_indices.min().item()
-            assert index_max < self.batchsize, index_min >= 0
-
+        env_indices = self.proc_indices(env_indices)
         super().reset(env_indices)
+
+        self._tas[env_indices] = 600.0
+        self._ppgt_tas2va()
 
         # reset simulation variaode_solverbles
         chi = torch.zeros(
             (env_indices.shape[0], 1), device=self.device
         )  # 航迹方位角(Course)
         gamma = torch.zeros((env_indices.shape[0], 1), device=self.device)  # 航迹倾斜角
-        self.Qgk[env_indices] = quat_mul(Qz(chi), Qy(gamma))
+        self.Q_ea[env_indices] = quat_mul(Qz(chi), Qy(gamma))
 
     def run(self, action: torch.Tensor):
         (
-            self.position_g,
+            self.position_e,
             self.tas,
             q_kg,
-        ) = self.ode_solver(
-            self.position_g,
-            self.velocity_g,
+        ) = self._run_ode(
+            self.position_e,
+            self.velocity_e,
             self.tas,
-            self.Qgk,
-            t_s=0.001 * self.sim_step_size_ms,
+            self.Q_ea,
+            t_s=0.001 * self._sim_step_size_ms,
             action=action,
         )
         #
         self._Qgk.copy_(normalize(q_kg))
-        self._ppgt_vk2vg()
+        self._ppgt_vb2ve()
         self._ppgt_tas2va()
 
         super().run()
 
         self.step_hit()
 
-    def _ppgt_vk2vg(self):
-        self._vel_g.copy_(quat_rotate(q=self.Qgk, v=self.velocity_k))
+    def launch(self, env_indices):
+        env_indices = self.proc_indices(env_indices)
+        super().launch(env_indices)
+        
+        self._tas[env_indices] = 600.0
+        self._ppgt_tas2va()
 
-    def ode_solver(
+    def _run_ode(
         self,
         position_e: torch.Tensor,
         velocity_e: torch.Tensor,
@@ -202,7 +185,7 @@ class PointMassMissile(BaseMissile):
 
     @property
     def T_b(self) -> torch.Tensor:
-        mask = 0.001 * self.sim_time_ms < self._t_thrust_s
+        mask = self.sim_time_s < self._t_thrust_s
         T_b = torch.tensor([self._T], device=self.device).repeat(self.batchsize)
         return (mask * T_b).unsqueeze(-1)
 
@@ -213,3 +196,4 @@ class PointMassMissile(BaseMissile):
         D_2 = self._K_2 * (torch.pow(n_y, 2) + torch.pow(n_z, 2)) / torch.pow(tas, 2)
 
         return D_1 + D_2
+

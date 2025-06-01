@@ -6,28 +6,26 @@ from collections import OrderedDict
 from typing import Any, Sequence, TypeVar
 
 
-def get_spaces_shape(space: spaces) -> int:
+def get_spaces_shape(space: spaces.Space) -> int:
     if isinstance(space, spaces.Discrete):
         return 1
     elif isinstance(space, spaces.Box):
-        return torch.prod(torch.tensor(space.shape)).item()
+        return np.prod(space.shape).item()
     elif isinstance(space, spaces.Tuple):
-        shape_list = torch.tensor([get_spaces_shape(subspace) for subspace in space])
-        return torch.sum(shape_list).item()
+        shape_list = [get_spaces_shape(subspace) for subspace in space]
+        return sum(shape_list)
     elif isinstance(space, spaces.Dict):
-        shape_list = []
-        for k, subspace in space.items():
-            shape_list.append(get_spaces_shape(subspace))
-
-        return torch.sum(torch.tensor(shape_list)).item()
+        shape_list = [get_spaces_shape(subspace) for subspace in space.values()]
+        return sum(shape_list)
+    raise NotImplementedError("type(space) {} is unsupported".format(type(space)))
 
 
-def space2box(space: spaces.Space,dtype=np.float32) -> spaces.Box:
-    def _get_value_bound(space: spaces.Space) -> np.ndarray:
+def space2box(space: spaces.Space, dtype=np.float32) -> spaces.Box:
+    def _get_value_bound(space: spaces.Space):
         if isinstance(space, spaces.Discrete):
             return (
                 np.array([space.start], dtype=dtype),
-                np.array([space.start + space.n], dtype=dtype),
+                np.array([space.start + space.n - 1], dtype=dtype),
             )
         elif isinstance(space, spaces.Box):
             return (space.low.astype(dtype), space.high.astype(dtype))

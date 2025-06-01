@@ -8,23 +8,24 @@ from gymnasium import spaces
 from typing import Any, Sequence
 from collections import OrderedDict
 from pathlib import Path
-from environments.models.aircraft import BaseAircraft, PointMassAircraft
-from environments.utils.space import space2box, flatten, unflatten
-from environments.utils.math import (
+from .models.aircraft import BaseAircraft, PointMassAircraft
+from .utils.space import space2box, flatten, unflatten
+from .utils.math import (
     quat_enu_ned,
     quat_rotate,
-    quat_rotate_inverse,
+    quat_rotate_inv,
     euler_from_quat,
     Qx,
     quat_mul,
     ned2aer,
 )
-from environments.utils.tacview_render import ObjectState, AircraftAttr, WaypointAttr
-from environments.reword_fns import *
-from environments.termination_fns import *
+from .utils.tacview_render import ObjectState, AircraftAttr, WaypointAttr
+from .reword_fns import *
+from .termination_fns import *
+from .proto4venv import TrueVecEnv
 
 
-class NavigationEnv(gymnasium.Env):
+class NavigationEnv(TrueVecEnv):
     metadata: dict[str, Any] = {"render_modes": ["tacview"], "render_fps": 25}
     name = "NavigationEnv"
 
@@ -46,7 +47,7 @@ class NavigationEnv(gymnasium.Env):
             "numpy", "pytorch"
         ] = "numpy",  # step输出obs格式, "numpy"->ndarray, "pytorch"->torch.Tensor
     ):
-        super().__init__()
+        super().__init__(num_envs=num_envs, device=device, dtype=dtype)
         assert (
             agent_step_size_ms > 0 and sim_step_size_ms > 0
         ), "仿真步长及决策步长必须大于0"
@@ -56,9 +57,6 @@ class NavigationEnv(gymnasium.Env):
         ), "决策步长必须为仿真步长的整数倍"
         self.agent_step_size_ms = agent_step_size_ms
         self.sim_step_size_ms = sim_step_size_ms
-        self.num_envs = num_envs
-        self.device = device
-        self.dtype = dtype
         self.np_dtype = np_float
         self.mode = mode
         assert mode in ["numpy", "pytorch"], "mode must be 'numpy' or 'pytorch'"
@@ -71,11 +69,11 @@ class NavigationEnv(gymnasium.Env):
         self.position_min_limit = torch.tensor(
             position_min_limit,
             dtype=torch.int,
-        )  # (3,)
+        ).ravel()  # (3,)
         self.position_max_limit = torch.tensor(
             position_max_limit,
             dtype=torch.int,
-        )  # (3,)
+        ).ravel()  # (3,)
 
         self.render_mode = render_mode
         if self.render_mode:
@@ -84,8 +82,8 @@ class NavigationEnv(gymnasium.Env):
                 render_dir.mkdir(parents=True)
             self.render_dir = render_dir
 
-        # 计算渲染帧间隔
-        self._render_interval_ms = round((1000 / self.metadata["render_fps"]))
+            # 计算渲染帧间隔
+            self._render_interval_ms = round((1000 / self.metadata["render_fps"]))
 
         # 创建战斗机模型(逃逸者)
         self.aircraft = PointMassAircraft(
@@ -105,9 +103,10 @@ class NavigationEnv(gymnasium.Env):
 
         # define observation space
         self._observation_space = spaces.Dict()
+
         self._observation_space["aircraft_position_g"] = spaces.Box(
-            low=self.position_min_limit.numpy(),
-            high=self.position_max_limit.numpy(),
+            low=np.reshape(self.position_min_limit.numpy(), (-1,)).astype(np_float),
+            high=np.reshape(self.position_max_limit.numpy(), (-1,)).astype(np_float),
             shape=(3,),
             dtype=np_float,
         )  # 局部地轴系位置
@@ -131,8 +130,8 @@ class NavigationEnv(gymnasium.Env):
         )  # 迎角 rad [-π/2, π/2]
         navigation_point = spaces.Dict()
         navigation_point["navigation_point_position_g"] = spaces.Box(
-            low=self.position_min_limit.numpy(),
-            high=self.position_max_limit.numpy(),
+            low=np.reshape(self.position_min_limit.numpy(), (-1,)).astype(np_float),
+            high=np.reshape(self.position_max_limit.numpy(), (-1,)).astype(np_float),
             shape=(3,),
             dtype=np_float,
         )
@@ -140,7 +139,7 @@ class NavigationEnv(gymnasium.Env):
             [navigation_point] * self.navigation_points_visible_num
         )  # (滑动窗口)剩余可见&未达导航点
 
-        print(self._observation_space)
+        # print(self._observation_space)
 
         # define action space
         self._action_space = spaces.Dict()
@@ -148,10 +147,10 @@ class NavigationEnv(gymnasium.Env):
             low=0, high=1, shape=(1,), dtype=np_float
         )
         self._action_space["alpha_cmd"] = spaces.Box(
-            low=-np.pi / 4, high=np.pi / 4, shape=(1,), dtype=np_float
+            low=-1.0, high=1.0, shape=(1,), dtype=np_float
         )
         self._action_space["mu_cmd"] = spaces.Box(
-            low=-np.pi, high=np.pi, shape=(1,), dtype=np_float
+            low=-1.0, high=1.0, shape=(1,), dtype=np_float
         )
 
         # deffine reward functions
@@ -201,8 +200,8 @@ class NavigationEnv(gymnasium.Env):
         goals = np.concatenate(
             [
                 rng.integers(
-                    cast(int, self.position_min_limit[i].item()),
-                    cast(int, self.position_max_limit[i].item()),
+                    cast(int, self.position_min_limit[..., i].item()),
+                    cast(int, self.position_max_limit[..., i].item()),
                     [nenvs, num + npad, 1],
                 )
                 for i in range(self.position_min_limit.shape[-1])
@@ -224,7 +223,7 @@ class NavigationEnv(gymnasium.Env):
         if self.render_mode:
             env_idx = 0  # 选择渲染的环境编号
             for i in range(self.navigation_points_visible_num):
-                index = self.navigation_point_index[env_idx] + i  # (1,3)
+                index = self.cur_nav_point_index[env_idx] + i  # (1,3)
                 navigation_point = torch.gather(
                     self.navigation_points[env_idx], dim=1, index=index
                 ).squeeze(1)
@@ -242,23 +241,7 @@ class NavigationEnv(gymnasium.Env):
         self.__objects_states.append(object_state)
 
     def reset(self, env_indices: Sequence[int] | torch.Tensor | None = None):
-        if env_indices is None:
-            env_indices = torch.arange(self.num_envs, device=self.device)
-
-        elif isinstance(env_indices, Sequence):
-            # check indices
-            index_max = max(env_indices)
-            index_min = min(env_indices)
-            assert index_max < self.num_envs, index_min >= 0
-            env_indices = torch.tensor(env_indices, device=self.device)
-
-        elif isinstance(env_indices, torch.Tensor):
-            # check indices
-            assert len(env_indices.shape) == 1
-            env_indices = env_indices.to(device=self.device)
-            index_max = env_indices.max().item()
-            index_min = env_indices.min().item()
-            assert index_max < self.num_envs, index_min >= 0
+        env_indices = self.proc_indices(env_indices)
 
         # reset aircraft model
         self.aircraft.reset(env_indices)
@@ -272,10 +255,10 @@ class NavigationEnv(gymnasium.Env):
         )
         try:
             self.navigation_points[env_indices, ...] = navigation_points
-            self.navigation_point_index[env_indices, ...] = navigation_point_index
+            self.cur_nav_point_index[env_indices, ...] = navigation_point_index
         except AttributeError:
             self.navigation_points = navigation_points
-            self.navigation_point_index = navigation_point_index
+            self.cur_nav_point_index = navigation_point_index
         self._update_navigation_point()
 
         # print("navigation points: " , self.navigation_points)
@@ -313,15 +296,23 @@ class NavigationEnv(gymnasium.Env):
 
     def _update_navigation_point(self):
         """缓存当前导航点信息"""
-        self.current_navigation_point = torch.gather(
+        self.cur_nav_pos = torch.gather(
             self.navigation_points,
             dim=-2,
-            index=self.navigation_point_index,
+            index=self.cur_nav_point_index,
         ).squeeze(
             -2
         )  # (nenvs,3), 当前需要到达的导航点位置
 
-        self.navagation_LOS = self.current_navigation_point - self.aircraft.position_g # (nenvs,3) 飞机-导航点视线
+        self.cur_nav_LOS = (
+            self.cur_nav_pos - self.aircraft.position_e
+        )  #  飞机-当前导航点视线 (nenvs,3)
+        self.cur_nav_dist = torch.norm(self.cur_nav_LOS, dim=-1, p=2).clip(
+            1e-6
+        )  # (nenvs,) 飞机-导航点距离
+        self.cur_nav_LOS_azimuth, self.cur_nav_LOS_elevation, self.cur_nav_dist = (
+            torch.split(ned2aer(self.cur_nav_LOS), [1, 1, 1], dim=-1)
+        )
 
     def _cast_out(self, data: torch.Tensor) -> torch.Tensor | np.ndarray:
         if self._out_as_np:
@@ -354,7 +345,7 @@ class NavigationEnv(gymnasium.Env):
                         Color=self.aircraft.model_color,
                         TAS=self.aircraft.tas[0].item(),
                     ),
-                    pos_ned=self.aircraft.position_g[0, ...].detach().cpu(),
+                    pos_ned=self.aircraft.position_e[0, ...].detach().cpu(),
                     rpy_rad=euler.detach().cpu(),
                 )
                 self.__objects_states.append(aircraft_state)
@@ -472,8 +463,8 @@ class NavigationEnv(gymnasium.Env):
             raise TypeError("unsupported type for env_indices", type(env_indices))
 
         obs_dict = OrderedDict()
-        obs_dict["aircraft_position_g"] = self.aircraft.position_g[env_indices]
-        obs_dict["aircraft_velocity_g"] = self.aircraft.velocity_g[env_indices]
+        obs_dict["aircraft_position_g"] = self.aircraft.position_e[env_indices]
+        obs_dict["aircraft_velocity_g"] = self.aircraft.velocity_e[env_indices]
         obs_dict["aircraft_tas"] = self.aircraft.tas[env_indices]
         euler = euler_from_quat(self.aircraft.q_kg)
         chi = euler[..., 2:3]
@@ -487,7 +478,7 @@ class NavigationEnv(gymnasium.Env):
         for i in range(self.navigation_points_visible_num):
             navigation_point_dict = OrderedDict()
             navigation_point = torch.gather(
-                self.navigation_points, dim=1, index=self.navigation_point_index + i
+                self.navigation_points, dim=1, index=self.cur_nav_point_index + i
             ).squeeze(
                 1
             )  # (nenvs,3)
@@ -505,7 +496,9 @@ class NavigationEnv(gymnasium.Env):
         return obs_dict
 
     def __get_rew(self) -> torch.Tensor:
-        reward = torch.zeros(size=(self.num_envs, 1), device=self.device)
+        reward = torch.zeros(
+            size=(self.num_envs, 1), device=self.device, dtype=self.dtype
+        )
         for reward_fn in self._reward_fns:
             _reward = reward_fn(self)
             reward += _reward

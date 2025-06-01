@@ -10,7 +10,7 @@ from abc import ABC, abstractmethod
 
 from typing import Union, Sequence, TypeVar
 
-IndexLike = TypeVar("IndexLike", Sequence[int], slice, torch.Tensor)
+IndexLike = TypeVar("IndexLike", Sequence[int], torch.Tensor)
 
 
 class BaseRewardFn(ABC):
@@ -21,9 +21,11 @@ class BaseRewardFn(ABC):
     def reset(
         self,
         env: NavigationEnv | EvasionEnv,
-        env_indices: IndexLike = None,
+        env_indices: IndexLike | None = None,
         **kwargs,
     ) -> None: ...
 
     @abstractmethod
-    def __call__(self, env: NavigationEnv | EvasionEnv, **kwargs) -> torch.Tensor: ...
+    def __call__(
+        self, env: NavigationEnv | EvasionEnv, **kwargs
+    ) -> torch.Tensor | float: ...

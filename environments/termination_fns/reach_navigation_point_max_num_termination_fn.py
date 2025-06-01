@@ -14,4 +14,4 @@ class ReachNavigationPointMaxNumTerminationFn(BaseTerminationFn):
         pass
 
     def __call__(self, env: "NavigationEnv", **kwargs) -> torch.Tensor:
-        return (env.navigation_point_index[:, :, 0] >= env.navigation_points_total_num).detach()
+        return (env.cur_nav_point_index[:, :, 0] >= env.navigation_points_total_num).detach()

@@ -18,12 +18,12 @@ from environments.utils.math import (
     Qy,
     Qz,
     quat_rotate,
-    quat_rotate_inverse,
+    quat_rotate_inv,
     quat_mul,
     lerp,
     nlerp,
     herp,
-    aer2ned,
+    aer2xyz,
 )
 from ..modules import GaussianActor, Critic
 from ..agent import Agent
