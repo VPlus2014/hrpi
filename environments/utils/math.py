@@ -20,11 +20,7 @@ _where = torch.where
 _PI = torch.pi
 
 
-def affcmb(
-    w: torch.Tensor,
-    a: torch.Tensor | float,
-    b: torch.Tensor | float,
-) -> torch.Tensor:
+def affcmb(w, a, b):
     """Affine combination of two tensors.
 
     $$
@@ -395,6 +391,7 @@ def mati(q: torch.Tensor) -> torch.Tensor:
     mat_flat = (q0, -q1, -q2, -q3, q1, q0, q3, -q2, q2, -q3, q0, q1, q3, q2, -q1, q0)
     return torch.stack(mat_flat, -1).reshape(q0.shape + (4, 4))
 
+
 @torch.jit.script
 def _quat2mat_sqrt(q: torch.Tensor) -> torch.Tensor:
     q0, q1, q2, q3 = q.split([1, 1, 1, 1], -1)  # (...,1)
@@ -412,6 +409,7 @@ def _quat2mat_sqrt(q: torch.Tensor) -> torch.Tensor:
         -2,
     )
     return m
+
 
 def quat2mat_sqrt(q: torch.Tensor) -> torch.Tensor:
     r"""Computes the square root of the rotation matrix of a quaternion.
@@ -485,9 +483,7 @@ def quat_mul(p: torch.Tensor, q: torch.Tensor) -> torch.Tensor:
 def _crossmat_kern(v: torch.Tensor) -> torch.Tensor:
     x, y, z = v.unbind(dim=-1)  # (...,1)
     _0 = torch.zeros_like(x)
-    return _cat([_0, -z, y, 
-                 z, _0, -x, 
-                 -y, x, _0], -1).reshape(
+    return _cat([_0, -z, y, z, _0, -x, -y, x, _0], -1).reshape(
         v.shape[:-1] + (3, 3)
     )  # (...,3,3)
 
@@ -821,9 +817,9 @@ def vec_cosine(
     Returns:
         torch.Tensor: 余弦值 shape: (...,1)
     """
-    if n1 is None:
+    if not isinstance(n1, torch.Tensor):
         n1 = torch.norm(v1, p=2, dim=-1, keepdim=True)
-    if n2 is None:
+    if not isinstance(n2, torch.Tensor):
         n2 = torch.norm(v2, p=2, dim=-1, keepdim=True)
     return _vec_cosine(v1, v2, n1, n2)
 

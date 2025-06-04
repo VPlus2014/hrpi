@@ -1,9 +1,9 @@
 import torch
 from typing import TYPE_CHECKING
-from .base_termination_fn import BaseTerminationFn
+from ..base_termination_fn import BaseTerminationFn
 
 if TYPE_CHECKING:
-    from ..navigation import NavigationEnv
+    from ...navigation import NavigationEnv
 
 
 class ReachNavigationPointMaxNumTerminationFn(BaseTerminationFn):

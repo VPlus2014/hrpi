@@ -1,12 +1,12 @@
 from __future__ import annotations
 import hashlib
+import os
 from types import EllipsisType
 from typing import TYPE_CHECKING
 import logging
 import torch
 from abc import ABC, abstractmethod
 from typing import Literal, Sequence, Union
-
 from ..utils.math import (
     quat_conj,
     quat_mul,
@@ -43,6 +43,7 @@ class BaseModel(ABC):
         acmi_name: str = "",
         acmi_color: Literal["Red", "Blue"] | str = "Red",
         acmi_type: str = "",
+        use_gravity: bool = True,
     ) -> None:
         """模型基类 BaseModel
 
@@ -51,6 +52,7 @@ class BaseModel(ABC):
             position_e (torch.Tensor): NED地轴系下的初始位置, 单位:m, shape: (n, 3)
             alt0 (torch.Tensor | float, optional): 坐标原点高度, 单位:m.
             sim_step_size_ms (int, optional): 仿真步长, 单位:ms. Defaults to 1.
+            use_gravity (bool, optional): 是否启用重力(无则不支持计算重力). Defaults to True.
             device (torch.device, optional): 所在torch设备. Defaults to torch.device("cpu").
             dtype (torch.dtype, optional): torch浮点类型. Defaults to torch.float32.
             acmi_color (Literal["Red", "Blue"] | str, optional): Tacview Color. Defaults to "Red".
@@ -68,6 +70,7 @@ class BaseModel(ABC):
         self._sim_step_size_ms = sim_step_size_ms
         self._device = device = torch.device(device)
         self._dtype = dtype
+        self.use_gravity = use_gravity
 
         # simulation paramters
         self._rho = 1.29  # atmosphere density, unit: kp/m^3
@@ -93,14 +96,16 @@ class BaseModel(ABC):
         self._alt0 = _0f1 + alt0
         """altitude, unit: m, shape: (B, 1)"""
 
-        self._g_e = self._g * torch.cat(
-            [
-                torch.zeros((*_shape, 2), device=device, dtype=dtype),
-                torch.ones(_shape + [1], device=device, dtype=dtype),
-            ],
-            dim=-1,
-        )
-        """重力加速度NED地轴系坐标"""
+        # 常用缓存
+        self._0f = _0 = _0f1
+        self._1f = _1 = torch.ones_like(_0)
+        self._e1 = torch.cat([_1, _0, _0], -1)
+        self._e2 = torch.cat([_0, _1, _0], -1)
+        self._e3 = torch.cat([_0, _0, _1], -1)
+
+        if use_gravity:
+            self._g_e = self._g * self._e3
+            """重力加速度NED地轴系坐标, shape: (B, 3)"""
 
         self.status = BaseModel.STATUS_INACTIVATE + torch.zeros(
             size=_shape + [1], dtype=torch.int64, device=device
@@ -134,7 +139,7 @@ class BaseModel(ABC):
     def proc_batch_index(self, batch_index: _SupportedIndexType = None):
         """对批索引做预处理"""
         if batch_index is None or batch_index is Ellipsis:
-            idxs = Ellipsis
+            idxs = slice(None)
         elif isinstance(batch_index, (slice, torch.Tensor)):
             idxs = batch_index
         else:
@@ -397,7 +402,7 @@ class BaseFV(BaseModel):
         """真空速->风轴系惯性速度"""
         batch_index = self.proc_batch_index(batch_index)
         self._vel_w[batch_index, 0:1] = self._tas[batch_index, :]
-        self._vel_w[batch_index, 1:3] = 0
+        self._vel_w[batch_index, 1:3] = 0.0
 
     def _ppgt_Vw2Vb(self, batch_index: _SupportedIndexType = None):
         """真空速->体轴系惯性速度"""

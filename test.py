@@ -1,15 +1,18 @@
 import random
 import gymnasium as gym
 from pathlib import Path
-
 import numpy as np
-import environments
 
 # import torch
 from torch.utils.tensorboard.writer import SummaryWriter
 
 
 def main():
+    v1 = "1.3"
+    v2 = "1.4"
+    print(v1 > v2)
+    print(v1 < v2)
+
     n = 8
     dimX = 10
     x = np.random.random((n, dimX))
@@ -20,7 +23,7 @@ def main():
     obs22 = obs2[idxs]
     obs23 = x[idxs]
     print(obs2.shape)
-    assert np.equal(obs22,obs23).all()
+    assert np.equal(obs22, obs23).all()
     return
 
     x = torch.randint(0, 10, (1, 2), dtype=torch.int64)

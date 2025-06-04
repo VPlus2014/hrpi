@@ -4,6 +4,8 @@ import logging
 import traceback
 from typing import TYPE_CHECKING
 
+import pymap3d
+
 from .utils.log_ext import LogConfig
 
 if TYPE_CHECKING:
@@ -20,7 +22,7 @@ from typing import Any, Sequence
 from collections import OrderedDict
 from pathlib import Path
 from .models.base_model import BaseModel
-from .models.aircraft import BaseAircraft, PointMassAircraft
+from .models.aircraft import BaseAircraft, PointMassAircraft, PesudoDOF6
 from .utils.space import space2box, flatten, unflatten
 from .utils.math import (
     quat_enu_ned,
@@ -53,16 +55,21 @@ class NavigationEnv(TrueSyncVecEnv):
         self,
         agent_step_size_ms: int,  # 决策步长(ms)
         sim_step_size_ms: int,  # 仿真步长(ms)
-        position_min_limit: Sequence[float],  # (x_\min,y_\min,z_\min) 活动范围约束
-        position_max_limit: Sequence[float],  # (x_\max,y_\max,z_\max) 活动范围约束
+        position_min_limit: Sequence[
+            float
+        ],  # (x_\min,y_\min,z_\min) 飞机&导航点活动范围约束
+        position_max_limit: Sequence[
+            float
+        ],  # (x_\max,y_\max,z_\max) 飞机&导航点活动范围约束
         waypoints_visible_num: int = 1,  # 每一时刻对飞机可见的导航点数量
         waypoints_total_num: int = 1,  # 总导航点数量
-        waypoints_dR_ratio_min: float = 0.0,  # 相邻导航点间距最小值比例 in (0,1)
-        waypoints_dR_ratio_max: float = 1.0,  # 相邻导航点间距最大值比例 in (0,1)
-        waypoints_gen_range_ratio: float = 0.5,  # 导航点生成区半径比例 in (0,1)
+        waypoints_dR_ratio_min: float = 2e-2,  # 相邻导航点间距最小值比例 in (0,1)
+        waypoints_dR_ratio_max: float = 5e-2,  # 相邻导航点间距最大值比例 in (0,1)
+        waypoints_R_ratio_min: float = 1.0,  # 导航点生成区内径 in (0,inf)
+        waypoints_R_ratio_max: float = 1.0,  # 导航点生成区外径 in (0,inf)
         lat0: float = 39.9042,  # 坐标原点纬度, deg
         lon0: float = 116.4074,  # 坐标原点经度, deg
-        alt0: float = 5000,  # 坐标原点高度, m
+        alt0: float = 10000,  # 坐标原点高度, m
         render_mode: str | None = None,
         render_dir: Path | None = None,
         num_envs: int = 1,
@@ -72,26 +79,45 @@ class NavigationEnv(TrueSyncVecEnv):
         np_float=np.float32,
         out_torch=1,  # step输出obs格式, 0->ndarray, 1->torch.Tensor
         logconfig: LogConfig | None = None,  # 日志配置
+        debug=False,  # 调试模式
+        version="2.0",
     ):
+        self._version = version
         super().__init__(num_envs=num_envs, device=device, dtype=dtype)
-        self._logr = _LOGR if logconfig is None else logconfig.make()
+        self.logr = _LOGR if logconfig is None else logconfig.make()
         assert (
             agent_step_size_ms > 0 and sim_step_size_ms > 0
         ), "仿真步长及决策步长必须大于0"
         assert (
             agent_step_size_ms // sim_step_size_ms > 0
             and agent_step_size_ms % sim_step_size_ms == 0
-        ), "决策步长必须为仿真步长的整数倍"
+        ), ("决策步长必须为仿真步长的整数倍", agent_step_size_ms, sim_step_size_ms)
         self.agent_step_size_ms = agent_step_size_ms
         self.sim_step_size_ms = sim_step_size_ms
-        self.np_dtype = np_float
-        self.mode = out_torch
+        self.np_float = np_float
+        self.out_torch = out_torch
         self.max_sim_time_ms = int(max_sim_ms)
         # assert out_numpy in ["numpy", "pytorch"], "mode must be 'numpy' or 'pytorch'"
         # self._out_as_np = out_numpy == "numpy"
-        self._out_as_np = not out_torch
         self.waypoints_total_num = waypoints_total_num
         self.waypoints_visible_num = waypoints_visible_num  # horizon
+        self.waypoints_R_ratio_min = waypoints_R_ratio_min
+        self.waypoints_R_ratio_max = waypoints_R_ratio_max
+        assert waypoints_R_ratio_min >= 0, (
+            "expect waypoints_R_ratio_min>=0",
+            waypoints_R_ratio_min,
+        )
+        assert waypoints_R_ratio_min <= waypoints_R_ratio_max, (
+            "expect waypoints_R_ratio_min<=waypoints_R_ratio_max",
+            waypoints_R_ratio_min,
+            waypoints_R_ratio_max,
+        )
+        assert waypoints_R_ratio_max <= 1, (
+            "expect waypoints_R_ratio_max<=1",
+            waypoints_R_ratio_max,
+        )
+        self.waypoints_dR_ratio_min = waypoints_dR_ratio_min
+        self.waypoints_dR_ratio_max = waypoints_dR_ratio_max
         assert waypoints_visible_num >= 1, "expect navigation_points_visible_num >= 1"
         self.position_min_limit = torch.tensor(
             position_min_limit,
@@ -101,17 +127,30 @@ class NavigationEnv(TrueSyncVecEnv):
             position_max_limit,
             dtype=torch.int64,
         ).ravel()  # (3,)
+        self._region_diam = cast(
+            float,
+            torch.asarray(
+                self.position_max_limit - self.position_min_limit, dtype=self.dtype
+            )
+            .norm()
+            .item(),
+        )
+        assert (self.position_min_limit <= self.position_max_limit).all(), (
+            "expect position_min_limit<position_max_limit",
+            position_min_limit,
+            position_max_limit,
+        )
 
         # 坐标系原点的地理位置
-        self._origin_lat = lat0
+        self.lat0 = lat0
         """坐标原点纬度, deg"""
-        self._origin_lon = lon0
+        self.lon0 = lon0
         """坐标原点经度, deg"""
-        self._origin_alt = alt0
+        self.alt0 = alt0
         """坐标原点高度, m"""
 
         self.render_mode = render_mode
-        self.render_env_idx = 0
+        self.render_env_idx = 0  # 记录数据的环境编号
         if self.render_mode:
             assert render_dir is not None
             if not render_dir.exists():
@@ -121,44 +160,63 @@ class NavigationEnv(TrueSyncVecEnv):
             # 计算渲染帧间隔
             self._render_interval_ms = round((1000 / self.metadata["render_fps"]))
 
-        _0f = torch.zeros(size=(self.num_envs, 1), dtype=dtype, device=device)
+        if version == "1.0":
+            self._make_game_v1()
+        elif version == "2.0":
+            self._make_game_v2()
+        else:
+            raise ValueError(f"Unsupported version: {version}")
 
-        # 创建战斗机模型
-        tas = 340 + _0f
-        self.aircraft = pln = PointMassAircraft(
+        # define simulation variables
+        self.__objects_states: list[ObjectState] = []
+        self.__render_timestamp_ms = -float("inf")
+        self.__render_count = 0
+
+        self._episode_num = torch.zeros(
+            (self.num_envs, 1), dtype=torch.int64, device=device
+        )
+
+    def _make_game_v1(self):
+        dtype = self.dtype
+        device = self.device
+        np_float = self.np_float
+        alt0 = self.alt0
+        Vmin = 340
+        Vmax = 600
+        _0f = torch.zeros(size=(self.num_envs, 1), dtype=dtype, device=device)
+        tas = Vmax + _0f
+        # 创建飞机模型
+        pln = PointMassAircraft(
             id=0x10086,
-            acmi_name="J-10",
+            acmi_name="F-16C-52",
             call_sign="agent",
             acmi_color="Red",
-            position_e=torch.cat(
-                [_0f, _0f, _0f],
-                dim=-1,
-            ),
             tas=tas,
+            position_e=torch.zeros((self.num_envs, 3), dtype=dtype, device=device),
+            use_gravity=True,
             alt0=alt0,
-            sim_step_size_ms=sim_step_size_ms,
             device=device,
             dtype=dtype,
         )
-        pln.logr = self._logr
+        self.aircraft = pln
+        pln.logr = self.logr
 
-        # define observation space
+        # obs_space
         self._observation_space = spaces.Dict()
-
+        # define observation space
         self._observation_space["aircraft_position_g"] = spaces.Box(
             low=np.reshape(self.position_min_limit.numpy(), (-1,)).astype(np_float),
             high=np.reshape(self.position_max_limit.numpy(), (-1,)).astype(np_float),
             shape=(3,),
             dtype=np_float,
         )  # 局部地轴系位置
-        rmax = 10e3
-        Vmin = 150.0
-        Vmax = 400.0
+        radius = self._region_diam * 0.5
+        rmax = radius * self.waypoints_R_ratio_min
         hmin = alt0 - rmax
         hmax = alt0 + rmax
         self._observation_space["aircraft_velocity_g"] = spaces.Box(
-            low=np.asarray([-rmax, -rmax, -rmax], dtype=np_float),
-            high=np.asarray([rmax, rmax, rmax], dtype=np_float),
+            low=np.asarray([-Vmax, -Vmax, -Vmax], dtype=np_float),
+            high=np.asarray([Vmax, Vmax, Vmax], dtype=np_float),
             shape=(3,),
             dtype=np_float,
         )  # 局部地轴系速度
@@ -204,20 +262,21 @@ class NavigationEnv(TrueSyncVecEnv):
 
         # deffine reward functions
         self._reward_fns: list[BaseRewardFn] = [
-            ReachNavigationPointRewardFn(min_distance_m=200, weight=100),
+            ReachNavigationPointRewardFn(min_distance_m=500, weight=100),
             ApproachNavigationPointRewardFn(weight=1, version=4),
             #
             LowAltitudeRewardFn(
                 min_altitude_m=hmin,
                 max_altitude_m=hmax,
-                weight=1,
+                weight=0.1,
             ),
             LowAirSpeedRewardFn(
                 min_airspeed_mps=Vmin,
                 max_airspeed_mps=Vmax,
-                weight=1,
+                weight=0.1,
             ),
         ]
+        self._rew_rows = 0
 
         # define termination functions
         self._termination_fns: list[BaseTerminationFn] = [
@@ -227,18 +286,97 @@ class NavigationEnv(TrueSyncVecEnv):
             TimeoutTerminationFn(1 * 60),
         ]
 
-        # define simulation variables
-        self.__objects_states: list[ObjectState] = []
-        self.__render_timestamp_ms = -float("inf")
-        self.__render_count = 0
+    def _make_game_v2(self):
+        device = self.device
+        dtype = self.dtype
+        np_float = self.np_float
+        _0f = torch.zeros(size=(self.num_envs, 1), dtype=dtype, device=device)
+        sim_step_size_ms = self.sim_step_size_ms
+        Vmin = Vmax = 340
+        alt0 = self.alt0
+        tas = Vmax + _0f
+        self.aircraft = pln = PesudoDOF6(
+            id=0x10086,
+            acmi_name="J-10",
+            call_sign="agent",
+            acmi_color="Red",
+            position_e=torch.zeros((self.num_envs, 3), dtype=dtype, device=device),
+            use_gravity=False,
+            nx_max=0,
+            nx_min=0,
+            tas=tas,
+            alt0=alt0,
+            sim_step_size_ms=sim_step_size_ms,
+            device=device,
+            dtype=dtype,
+            Vmin=Vmin,
+            Vmax=Vmax,
+        )
+        pln.logr = self.logr
+
+        radius = self._region_diam * 0.5
+        # define observation space
+        obs_space = spaces.Dict()
+        obs_space["los_b"] = spaces.Box(
+            low=np.asarray([-radius, -radius, -radius], dtype=np_float),
+            high=np.asarray([radius, radius, radius], dtype=np_float),
+            shape=(3,),
+            dtype=np_float,
+        )  # 局部地轴系位置
+        if Vmin != Vmax:
+            obs_space["tas"] = spaces.Box(
+                low=Vmin,
+                high=Vmax,
+                shape=(1,),
+                dtype=np_float,
+            )  # 真空速
+
+        if pln._nx_min != pln._nx_max:
+            obs_space["nx"] = spaces.Box(
+                low=pln._nx_min, high=pln._nx_max, shape=(1,), dtype=np_float
+            )  # 切向过载
+        if pln._ny_min != pln._ny_max:
+            obs_space["ny"] = spaces.Box(
+                low=pln._ny_min, high=pln._ny_max, shape=(1,), dtype=np_float
+            )
+        if pln._nz_min != pln._nz_max:
+            obs_space["nz"] = spaces.Box(
+                low=pln._nz_min, high=pln._nz_max, shape=(1,), dtype=np_float
+            )  # 法向过载
+
+        obs_space["dmu"] = spaces.Box(
+            low=-pln._dot_mu_max, high=pln._dot_mu_max, shape=(1,), dtype=np_float
+        )
+        self._observation_space = obs_space
+
+        # action space
+        act_space = spaces.Dict()
+        act_space["nx_cmd"] = spaces.Box(low=0, high=1.0, shape=(1,), dtype=np_float)
+        act_space["ny_cmd"] = spaces.Box(low=0, high=1.0, shape=(1,), dtype=np_float)
+        act_space["nz_cmd"] = spaces.Box(low=0, high=1.0, shape=(1,), dtype=np_float)
+        act_space["dmu_cmd"] = spaces.Box(
+            low=-1.0, high=1.0, shape=(1,), dtype=np_float
+        )
+        self._action_space = act_space
+
+        # define reward functions
+        self._reward_fns: list[BaseRewardFn] = [
+            ReachNavigationPointRewardFn(min_distance_m=radius * 1e-2, weight=100),
+            ApproachNavigationPointRewardFn(weight=1, version=2),
+            #
+        ]
+        self._termination_fns: list[BaseTerminationFn] = [
+            ReachNavigationPointMaxNumTerminationFn(),
+            TC_FarAwayFromWaypoint(distance_threshold=radius * 2),
+        ]
 
     @cached_property
     def observation_space(self):
-        return space2box(self._observation_space, dtype=self.np_dtype)
+        return space2box(self._observation_space, dtype=self.np_float)
 
     @cached_property
     def action_space(self):
-        return space2box(self._action_space, dtype=self.np_dtype)
+        return space2box(self._action_space, dtype=self.np_float)
 
     def generate_navigation_points(
         self,
@@ -258,17 +396,40 @@ class NavigationEnv(TrueSyncVecEnv):
         num = self.waypoints_total_num
         npad = self.waypoints_visible_num - 1  # 用最后一个导航点额外填充的数量
         rng = np.random.default_rng(seed)
-        goals = np.concatenate(
-            [
-                rng.integers(
-                    cast(int, self.position_min_limit[..., i].item()),
-                    cast(int, self.position_max_limit[..., i].item()),
-                    [nenvs, num + npad, 1],
-                )
-                for i in range(self.position_min_limit.shape[-1])
-            ],
-            axis=-1,
-        )  # (...,N+npad,3)
+
+        version = self._version
+        # 随机生成导航点
+        if version == "1.0":
+            goals = np.concatenate(
+                [
+                    rng.integers(
+                        cast(int, self.position_min_limit[..., i].item()),
+                        cast(int, self.position_max_limit[..., i].item()),
+                        [nenvs, num, 1],
+                    )
+                    for i in range(self.position_min_limit.shape[-1])
+                ],
+                axis=-1,
+            )  # (...,N+npad,3)
+        elif version <= "2.0":
+            Rmax = self._region_diam * 0.5
+            r = affcmb(
+                rng.random(size=(nenvs, num, 1)),
+                self.waypoints_R_ratio_min * Rmax,
+                self.waypoints_R_ratio_max * Rmax,
+            )
+            dae = affcmb(
+                rng.random(size=(nenvs, num, 2)),
+                self.waypoints_dR_ratio_min / Rmax,
+                self.waypoints_dR_ratio_max / Rmax,
+            )
+            dae[..., [0], :] = affcmb(rng.random(size=(nenvs, num, 1)), 0, 2 * np.pi)
+            for i in range(1, num):
+                dae[..., i, :] += dae[..., i - 1, :]
+            az, el = np.split(dae, 2, axis=-1)
+            goals = np.concatenate(pymap3d.aer2ned(az, el, r), axis=-1)  # (...,N,3)
+
+        goals = np.concatenate([goals, np.zeros((nenvs, npad, 3))], axis=-2)
         goals[..., -npad + 1 :, :] = goals[..., [-npad], :]  # 最后一个导航点填充
 
         navigation_points = torch.asarray(goals, dtype=dtype, device=device)
@@ -277,6 +438,8 @@ class NavigationEnv(TrueSyncVecEnv):
             dtype=torch.int64,
             device=device,
         )
+        assert len(navigation_points.shape) == 3, "invalid waypoints shape"
+        assert len(navigation_point_index.shape) == 3, "invalid waypoints index shape"
         return navigation_points, navigation_point_index
 
     def render_navigation_points(self):
@@ -298,9 +461,9 @@ class NavigationEnv(TrueSyncVecEnv):
                         Next=namefmt.format(wpindex + 1),
                         CallSign=callsignfmt.format(wpindex),
                     ),
-                    lat0=self._origin_lat,
-                    lon0=self._origin_lon,
-                    h0=self._origin_alt,
+                    lat0=self.lat0,
+                    lon0=self.lon0,
+                    h0=self.alt0,
                     pos_ned=waypoint_xyz,
                 )
                 self.__objects_states.append(waypoint)
@@ -308,7 +471,7 @@ class NavigationEnv(TrueSyncVecEnv):
     def render_object_state(self, object_state: ObjectState):
         self.__objects_states.append(object_state)
 
-    @torch.no_grad()
+    # @torch.no_grad()
     def reset(self, env_indices: _EnvIndexType = None, cast_out=True):
         env_indices = self.proc_indices(env_indices)
 
@@ -316,6 +479,8 @@ class NavigationEnv(TrueSyncVecEnv):
         # reset aircraft model
         pln.reset(env_indices)
         pln.activate(env_indices)
+
+        self._episode_num[env_indices, 0] += 1
 
         # reset navigation point
         # 穿梭机任务，按顺序经过所有导航点
@@ -339,8 +504,16 @@ class NavigationEnv(TrueSyncVecEnv):
         ).squeeze(1)
         aer = ned2aer(selected_points[env_indices] - pln.position_e(env_indices))
         # print("aer: ", aer)
-        pln.set_gamma(aer[..., 1:2], env_indices)
-        pln.set_chi(aer[..., 0:1], env_indices)
+        azimuth = aer[..., 0:1]
+        elevation = aer[..., 1:2]
+        pln.set_gamma(
+            elevation * affcmb(torch.rand_like(azimuth), -2, 2),
+            env_indices,
+        )
+        pln.set_chi(
+            azimuth * affcmb(torch.rand_like(azimuth), -2, 2),
+            env_indices,
+        )
         pln._ppgt_rpy_ew2Qew(env_indices)
         pln._propagate(env_indices)
 
@@ -350,7 +523,7 @@ class NavigationEnv(TrueSyncVecEnv):
 
         self.__render_timestamp_ms = -float("inf")
 
-        for reward_fn in self._reward_fns:
+        for reward_fn in self._reward_fns:  # @reset
             reward_fn.reset(self, env_indices)
 
         obs_dict = self.__get_obs(env_indices)
@@ -360,7 +533,7 @@ class NavigationEnv(TrueSyncVecEnv):
             self.__objects_states.clear()
             self.render_navigation_points()
 
-        for tcf in self._termination_fns:
+        for tcf in self._termination_fns:  # @reset
             tcf.reset(self)
 
         obs = flatten(self._observation_space, obs_dict)
@@ -391,11 +564,11 @@ class NavigationEnv(TrueSyncVecEnv):
         ) = torch.split(ned2aer(self.cur_nav_LOS), [1, 1, 1], dim=-1)
 
     def _cast_out(self, data: torch.Tensor, accept=True) -> torch.Tensor | NDArray:
-        if self._out_as_np and accept:
+        if not self.out_torch and accept:
             data = data.cpu().numpy()
         return data
 
-    @torch.no_grad()
+    # @torch.no_grad()
     def step(self, action: torch.Tensor):
         step_num = self.agent_step_size_ms // self.sim_step_size_ms
         pln = self.aircraft  # @step
@@ -415,8 +588,11 @@ class NavigationEnv(TrueSyncVecEnv):
                 record_flag = False
 
             pln.run(action)
+
+            self._update_navigation_point()
+
             if record_flag:
-                rpy_eb = pln.rpy_eb(idx_rcd)
+                rpy_eb = pln.rpy_ew(idx_rcd)
 
                 aircraft_state = ObjectState(
                     sim_time_s=self.sim_time_s[idx_rcd].item(),
@@ -427,15 +603,16 @@ class NavigationEnv(TrueSyncVecEnv):
                     ),
                     pos_ned=pln.position_e(idx_rcd).cpu().numpy(),
                     rpy_rad=rpy_eb.cpu().numpy(),
-                    lat0=self._origin_lat,
-                    lon0=self._origin_lon,
-                    h0=self._origin_alt,
+                    lat0=self.lat0,
+                    lon0=self.lon0,
+                    h0=self.alt0,
                 )
                 self.__objects_states.append(aircraft_state)
 
         obs_dict = self.__get_obs()
 
         rew = self.__get_rew()
+
         truncated = self.sim_time_ms >= self.max_sim_time_ms
         terminated = self.__is_terminated()
         done = terminated | truncated
@@ -520,32 +697,53 @@ class NavigationEnv(TrueSyncVecEnv):
         pln = self.aircraft  # @get_obs
 
         obs_dict: OrderedDict[str, torch.Tensor | Any] = OrderedDict()
-        obs_dict["aircraft_position_g"] = pln.position_e(env_indices)
-        obs_dict["aircraft_velocity_g"] = pln.velocity_e(env_indices)
-        obs_dict["aircraft_tas"] = pln.tas(env_indices)
-        obs_dict["aircraft_chi"] = pln.chi(env_indices)
-        obs_dict["aircraft_gamma"] = pln.gamma(env_indices)
-        obs_dict["aircraft_mu"] = pln.mu(env_indices)
-        obs_dict["aircraft_alpha"] = pln.alpha(env_indices)
 
-        navigation_points = []
-        for i in range(self.waypoints_visible_num):
-            navigation_point_dict = OrderedDict()
-            navigation_point = torch.gather(
-                self.navigation_points, dim=1, index=self.cur_nav_point_index + i
-            ).squeeze(
-                1
-            )  # (nenvs,3)
-            navigation_point_dict["navigation_point_position_g"] = navigation_point[
-                env_indices
-            ]
-            # aer = ned2aer(navigation_point-pln.position_g)
-            # navigation_point_dict["navigation_point_az"] = aer[env_indices, 0:1]
-            # navigation_point_dict["navigation_point_elev"] = aer[env_indices, 1:2]
-            # navigation_point_dict["navigation_point_slant_range"] = aer[env_indices, 2:3]/torch.norm((self.position_max_limit.to(device=self.device)-self.position_min_limit.to(device=self.device)).to(dtype=torch.float32), p=2)
+        version = self._version
+        if version == "1.0":
 
-            navigation_points.append(navigation_point_dict)
-        obs_dict["navigation_points"] = tuple(navigation_points)
+            obs_dict["aircraft_position_g"] = pln.position_e(env_indices)
+            obs_dict["aircraft_velocity_g"] = pln.velocity_e(env_indices)
+            obs_dict["aircraft_tas"] = pln.tas(env_indices)
+            obs_dict["aircraft_chi"] = pln.chi(env_indices)
+            obs_dict["aircraft_gamma"] = pln.gamma(env_indices)
+            obs_dict["aircraft_mu"] = pln.mu(env_indices)
+            obs_dict["aircraft_alpha"] = pln.alpha(env_indices)
+
+            navigation_points = []
+            for i in range(self.waypoints_visible_num):
+                navigation_point_dict = OrderedDict()
+                navigation_point = torch.gather(
+                    self.navigation_points, dim=1, index=self.cur_nav_point_index + i
+                ).squeeze(
+                    1
+                )  # (nenvs,3)
+                navigation_point_dict["navigation_point_position_g"] = navigation_point[
+                    env_indices
+                ]
+                # aer = ned2aer(navigation_point-pln.position_g)
+                # navigation_point_dict["navigation_point_az"] = aer[env_indices, 0:1]
+                # navigation_point_dict["navigation_point_elev"] = aer[env_indices, 1:2]
+                # navigation_point_dict["navigation_point_slant_range"] = aer[env_indices, 2:3]/torch.norm((self.position_max_limit.to(device=self.device)-self.position_min_limit.to(device=self.device)).to(dtype=torch.float32), p=2)
+
+                navigation_points.append(navigation_point_dict)
+            obs_dict["navigation_points"] = tuple(navigation_points)
+        elif version == "2.0":
+            self._make_game_v2
+            pln = cast(PesudoDOF6, pln)
+            obs_dict["los_b"] = quat_rotate_inv(
+                pln.Q_ew(env_indices), self.cur_nav_LOS[env_indices]
+            )
+            if pln._Vmin != pln._Vmax:
+                obs_dict["tas"] = pln.tas(env_indices)
+
+            if pln._nx_min != pln._nx_max:
+                obs_dict["nx"] = pln._n_w[env_indices, [0]]
+            if pln._ny_min != pln._ny_max:
+                obs_dict["ny"] = pln._n_w[env_indices, [1]]
+            if pln._nz_min != pln._nz_max:
+                obs_dict["nz"] = -pln._n_w[env_indices, [2]]
+
+            obs_dict["dmu"] = pln._dmu[env_indices, :]
 
         return obs_dict
 
@@ -553,30 +751,38 @@ class NavigationEnv(TrueSyncVecEnv):
         reward = torch.zeros(
             size=(self.num_envs, 1), device=self.device, dtype=self.dtype  # @get_rew
         )
+        meta = {}
         plane = self.aircraft  # @get_rew
-        for reward_fn in self._reward_fns:
+        for reward_fn in self._reward_fns:  # @get_rew
             _reward = reward_fn(self, plane)
             reward += _reward
+            meta[reward_fn.__class__.__name__] = _reward[0].detach().cpu().item()
+
+        self.logr.debug(("reward:", meta))
         return reward
 
     def __is_terminated(self) -> torch.Tensor:
+        logr = self.logr  # @get_terminate
         plane = self.aircraft  # @get_terminate
         terminated = torch.zeros(
             size=(self.num_envs, 1),
             dtype=torch.bool,
             device=self.device,  # @get_terminate
         )
-        for termination_fn in self._termination_fns:
+        envidx = self.render_env_idx  # @get_terminate
+        for termination_fn in self._termination_fns:  # @get_terminate
             try:
                 _terminated = termination_fn(self, plane)
+                terminated = terminated | _terminated
+                if _terminated[envidx]:
+                    logr.info(
+                        "Env[{}]@E{} terminated: {}".format(
+                            envidx,
+                            self._episode_num[envidx, 0].item(),
+                            termination_fn.__class__.__name__,
+                        )
+                    )
             except Exception as e:
                 print(traceback.format_exc())
                 raise e
-            if _terminated[0]:
-                _LOGR.info(
-                    "Env[{}] terminated: {}".format(
-                        0, termination_fn.__class__.__name__
-                    )
-                )
-            terminated = terminated | _terminated
         return terminated

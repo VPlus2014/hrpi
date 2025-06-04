@@ -1,4 +1,8 @@
 from datetime import datetime
+import os
+
+os.environ["TORCH_USE_CUDA_DSA"] = "1"
+os.environ["CUDA_LAUNCH_BLOCKING"] = "0"
 import logging
 import time
 import traceback
@@ -20,7 +24,7 @@ def main():
     from environments.utils import log_ext
 
     ROOT_DIR = Path(__file__).parent
-    nenvs = 8000
+    nenvs = 4000
     envcls = NavigationEnv
     env_out_torch = False
     env_max_steps = 500
@@ -33,7 +37,7 @@ def main():
     algoname = "ppo"
     max_train_episodes = int(1e6)
     batch_size = 1000
-    buffer_size = 2 * batch_size  # 回放池最大轨迹数
+    buffer_size = 2 * (batch_size + nenvs)  # 回放池最大轨迹数
     RUNS_DIR = ROOT_DIR / "runs"
     TASK_DIR = RUNS_DIR / "{}_{}_{}".format(
         envcls.__name__,
@@ -51,14 +55,15 @@ def main():
     init_seed(10086)
 
     writer = SummaryWriter(TASK_DIR / "tb")
+    radius = 2000
     train_env = envcls(
         agent_step_size_ms=50,
         sim_step_size_ms=50,
         max_sim_ms=50 * env_max_steps,
-        waypoints_total_num=10,
-        waypoints_visible_num=2,
-        position_min_limit=[-5000, -5000, -10000],
-        position_max_limit=[5000, 5000, 0],
+        waypoints_total_num=1,
+        waypoints_visible_num=1,
+        position_min_limit=[-radius, -radius, -radius],
+        position_max_limit=[radius, radius, radius],
         render_mode="tacview",
         render_dir=TASK_DIR / "acmi",
         num_envs=nenvs,
@@ -70,6 +75,7 @@ def main():
             level=logging.DEBUG,
             file_path=str(TASK_DIR / "env.log"),
         ),
+        version="2.0",
     )
     # train_env = EvasionEnv(
     #     agent_step_size_ms=50,
