@@ -30,7 +30,9 @@ class DecoyAttr(ObjectAttr):
 
 class WaypointAttr(ObjectAttr):
     Type: str = "Navaid+Static+Waypoint"
-    Next: str = Field(default="", init=False)  # 后继点UID(在初始化时不直接接受 Next=... 形式输入)
+    Next: str = Field(
+        default="", init=False
+    )  # 后继点UID(在初始化时不直接接受 Next=... 形式输入)
 
     def __init__(self, name: str, **data):
         super().__init__(**data)
@@ -59,13 +61,14 @@ class ObjectState:
     def __init__(
         self,
         sim_time_s: float,
-        name: str,  # [ID]唯一的名称
+        name: str,  # [ID]唯一的名称->16进制 Object ID
         attr: ObjectAttr | AircraftAttr | MissileAttr,
         pos_ned: torch.Tensor,
         lat0: float = 30,
         lon0: float = 120,
         h0: float = 10000,
         rpy_rad: torch.Tensor | None = None,
+        call_sign: str | None = None,
     ):
         self.sim_time_s = sim_time_s
         self.id = get_obj_id(name)  # UID
@@ -79,6 +82,7 @@ class ObjectState:
         else:
             self.rpy_deg = None
         self.event_list: list[TacviewEvent] = []
+        self.call_sign = call_sign or name
 
     @property
     def pos_lla(self):

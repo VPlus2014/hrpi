@@ -4,7 +4,7 @@ import torch
 from .base_termination_fn import BaseTerminationFn
 
 if TYPE_CHECKING:
-    from ..proto4venv import TrueVecEnv
+    from ..proto4venv import TrueSyncVecEnv
 
 
 class TimeoutTerminationFn(BaseTerminationFn):

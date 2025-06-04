@@ -2,7 +2,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from ..proto4venv import TrueVecEnv
+    from ..proto4venv import TrueSyncVecEnv
     from .base_reward_fn import _EnvIndexType
 import torch
 import math
@@ -14,10 +14,10 @@ class TimeRewardFn(BaseRewardFn):
         super().__init__()
         self.weight = weight
 
-    def reset(self, env: TrueVecEnv, env_indices: _EnvIndexType  = None):
+    def reset(self, env: TrueSyncVecEnv, env_indices: _EnvIndexType  = None):
         pass
 
-    def forward(self, env: TrueVecEnv, **kwargs) -> torch.Tensor | float:
+    def forward(self, env: TrueSyncVecEnv, **kwargs) -> torch.Tensor | float:
         # return self.weight * torch.ones(
         #     (env.num_envs, 1), device=env.device, dtype=env.dtype
         # )

@@ -20,7 +20,7 @@ class ReplayBuffer:
         "act",
         "act_log_prob",
         "done",
-    ) # 最多支持的键
+    )  # 最多支持的键
 
     def __init__(
         self,
@@ -111,26 +111,26 @@ class ReplayBuffer:
         self.reset()
 
     def reset(self) -> None:
-        self.last_index = torch.zeros(
+        self._last_index = torch.zeros(
             size=(self.num_envs,), dtype=torch.int64, device=self.device
         )
         self._index = torch.zeros(
             size=(self.num_envs,), dtype=torch.int64, device=self.device
         )
-        self.size = torch.zeros(
+        self._size = torch.zeros(
             size=(self.num_envs,), dtype=torch.int64, device=self.device
         )  # size 目前没有用！！！
 
     def _add_index(self, env_indices: torch.Tensor | None = None):
         if env_indices is None:
-            self.last_index = ptr = self._index.clone()
-            self.size = torch.clamp(self.size + 1, max=self.max_size)
+            self._last_index = ptr = self._index.clone()
+            self._size = torch.clamp(self._size + 1, max=self.max_size)
             self._index = torch.fmod(self._index + 1, self.max_size)
             return ptr
         else:
-            self.last_index = ptr = self._index.clone()
-            self.size[env_indices] = torch.clamp(
-                self.size[env_indices] + 1, max=self.max_size
+            self._last_index = ptr = self._index.clone()
+            self._size[env_indices] = torch.clamp(
+                self._size[env_indices] + 1, max=self.max_size
             )
             self._index[env_indices] = torch.fmod(
                 self._index[env_indices] + 1, self.max_size
@@ -171,9 +171,12 @@ class ReplayBuffer:
     def sample(self) -> RolloutBatchProtocol:
         self._check()
         data_batch = deepcopy(self._meta)
-        data_batch.done[self.last_index] = True
+        data_batch.truncated[self._last_index] = True
         if self.compact:
             data_batch.obs_next = torch.cat(
                 [data_batch.obs[1:, ...], data_batch.obs[:1, ...]], dim=0
             )
         return data_batch
+
+    def __len__(self) -> int:
+        return self._size

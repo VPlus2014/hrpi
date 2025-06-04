@@ -104,7 +104,7 @@ class HPPOContinuous(Agent):
                 self.high_observation_space_dict, dtype=np_float
             ),
             action_space=space2box(self.low_action_space_dict, dtype=np_float),
-            batch_size=h_batch_size,
+            buffer_size=h_batch_size,
             num_envs=num_envs,
             writer=writer,
             device=device,
@@ -118,7 +118,7 @@ class HPPOContinuous(Agent):
                 self.high_observation_space_dict, dtype=np_float
             ),
             action_space=space2box(self.high_action_space_dict, dtype=np_float),
-            batch_size=h_batch_size,
+            learn_batch_size=h_batch_size,
             mini_batch_size=h_mini_batch_size,
             lr_a=h_lr_a,
             actor_hidden_sizes=h_actor_hidden_sizes,
@@ -143,7 +143,7 @@ class HPPOContinuous(Agent):
             name="tracker",
             observation_space=space2box(self.low_observation_space_dict),
             action_space=space2box(self.low_action_space_dict),
-            batch_size=l_batch_size,
+            learn_batch_size=l_batch_size,
             mini_batch_size=l_mini_batch_size,
             lr_a=l_lr_a,
             actor_hidden_sizes=l_actor_hidden_sizes,

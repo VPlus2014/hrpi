@@ -10,6 +10,8 @@ from typing import Literal
 from collections.abc import Sequence
 from .base_aircraft import BaseModel, BaseAircraft
 
+_DEBUG = True
+
 # from .base_aircraft import BaseMissile
 from ...utils.math import (
     normalize,
@@ -187,6 +189,7 @@ class PointMassAircraft(BaseAircraft):
         use_gravity = True  # 考虑重力
         use_overloading = True  # 输出过载
         ode_solver = ode_rk23
+        logr = self.logr
 
         thrust_cmd, alpha_cmd, mu_cmd = torch.split(
             action, [1, 1, 1], dim=-1
@@ -195,6 +198,18 @@ class PointMassAircraft(BaseAircraft):
         mu_d = affcmb(mu_cmd, -_PI, _PI)  # 期望滚转角
         alpha_d = affcmb(alpha_cmd, -self._alpha_max, self._alpha_max)  # 期望迎角
         thrust_d = affcmb(thrust_cmd, self._T_min, self._T_max)  # 期望推力
+
+        if _DEBUG:
+            logr.debug(
+                {
+                    "thrust_cmd": thrust_cmd[0].item(),
+                    "alpha_cmd": alpha_cmd[0].item(),
+                    "mu_cmd": mu_cmd[0].item(),
+                    "thrust_d": thrust_d[0].item(),
+                    "alpha_d": alpha_d[0].item(),
+                    "mu_d": mu_d[0].item(),
+                }
+            )
 
         _0 = torch.zeros_like(self._tas)
         _1 = torch.ones_like(_0)
@@ -261,6 +276,18 @@ class PointMassAircraft(BaseAircraft):
         pos_e_next, tas_next, Qew_next, mu_next, alpha_next = ode_solver(
             _f, (pos_e, tas, Qew, mu, alpha), t_s, dt_s
         )
+        if _DEBUG:
+            logr.debug(
+                {
+                    "tas": tas[0].item(),
+                    "|Qew|": Qew[0].norm().item(),
+                    "mu": mu[0].item(),
+                    "alpha": alpha[0].item(),
+                    "nx": self._nx[0].item(),
+                    "ny": self._ny[0].item(),
+                    "nz": self._nz[0].item(),
+                }
+            )
         return pos_e_next, tas_next, Qew_next, mu_next, alpha_next
 
     # 空气动力计算

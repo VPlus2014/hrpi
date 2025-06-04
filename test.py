@@ -1,22 +1,26 @@
 import random
 import gymnasium as gym
 from pathlib import Path
+
+import numpy as np
 import environments
-import torch
+
+# import torch
 from torch.utils.tensorboard.writer import SummaryWriter
 
 
-def crossmat(v: torch.Tensor):
-    """左叉积矩阵"""
-    v1, v2, v3 = v.unbind(dim=-1)
-    _0 = torch.zeros_like(v1)
-    return torch.cat([_0, -v3, v2, v3, _0, -v1, -v2, v1, _0])
-
-
 def main():
-    x = torch.randn((1, 1, 2, 3), dtype=torch.float32)
-    y = crossmat(x)
-    print(y.shape)
+    n = 8
+    dimX = 10
+    x = np.random.random((n, dimX))
+    y = np.random.random((n, dimX))
+    done = np.random.randint(0, 2, (n, 1)).astype(bool)
+    obs2 = np.where(done, x, y)
+    idxs = np.where(done.ravel())[0]
+    obs22 = obs2[idxs]
+    obs23 = x[idxs]
+    print(obs2.shape)
+    assert np.equal(obs22,obs23).all()
     return
 
     x = torch.randint(0, 10, (1, 2), dtype=torch.int64)

@@ -1,7 +1,10 @@
 from __future__ import annotations
+from copy import deepcopy
 import logging
 import traceback
 from typing import TYPE_CHECKING
+
+from .utils.log_ext import LogConfig
 
 if TYPE_CHECKING:
     from .proto4venv import _EnvIndexType
@@ -33,13 +36,13 @@ from .utils.tacview_render import ObjectState, AircraftAttr, WaypointAttr, get_o
 from .utils.tacview import ACMI_Types
 from .reward_fns import *
 from .termination_fns import *
-from .proto4venv import TrueVecEnv
+from .proto4venv import TrueSyncVecEnv
 from .utils.tacview import acmi_id
 
 _LOGR = logging.getLogger(__name__)
 
 
-class NavigationEnv(TrueVecEnv):
+class NavigationEnv(TrueSyncVecEnv):
     metadata: dict[str, Any] = {
         "render_modes": ["tacview"],
         "render_fps": 25,  # 渲染 ACMI 频率(仿真时间)
@@ -67,9 +70,11 @@ class NavigationEnv(TrueVecEnv):
         device=torch.device("cpu"),
         dtype=torch.float,
         np_float=np.float32,
-        out_torch = 1  # step输出obs格式, 0->ndarray, 1->torch.Tensor
+        out_torch=1,  # step输出obs格式, 0->ndarray, 1->torch.Tensor
+        logconfig: LogConfig | None = None,  # 日志配置
     ):
         super().__init__(num_envs=num_envs, device=device, dtype=dtype)
+        self._logr = _LOGR if logconfig is None else logconfig.make()
         assert (
             agent_step_size_ms > 0 and sim_step_size_ms > 0
         ), "仿真步长及决策步长必须大于0"
@@ -119,7 +124,7 @@ class NavigationEnv(TrueVecEnv):
 
         # 创建战斗机模型
         tas = 340 + _0f
-        self.aircraft = PointMassAircraft(
+        self.aircraft =pln= PointMassAircraft(
             id=0x10086,
             acmi_name="J-10",
             call_sign="agent",
@@ -134,6 +139,7 @@ class NavigationEnv(TrueVecEnv):
             device=device,
             dtype=dtype,
         )
+        pln.logr = self._logr
 
         # define observation space
         self._observation_space = spaces.Dict()
@@ -281,7 +287,7 @@ class NavigationEnv(TrueVecEnv):
         self.__objects_states.append(object_state)
 
     @torch.no_grad()
-    def reset(self, env_indices: _EnvIndexType = None):
+    def reset(self, env_indices: _EnvIndexType = None, cast_out=True):
         env_indices = self.proc_indices(env_indices)
 
         pln = self.aircraft  # @reset
@@ -337,8 +343,8 @@ class NavigationEnv(TrueVecEnv):
             tcf.reset(self)
 
         obs = flatten(self._observation_space, obs_dict)
-        obs_ = self._cast_out(obs)
-        return obs_, info
+        obs = self._cast_out(obs, cast_out)
+        return obs, info
 
     def _update_navigation_point(self):
         """缓存当前导航点信息"""
@@ -363,8 +369,8 @@ class NavigationEnv(TrueVecEnv):
             self.cur_nav_dist,
         ) = torch.split(ned2aer(self.cur_nav_LOS), [1, 1, 1], dim=-1)
 
-    def _cast_out(self, data: torch.Tensor) -> torch.Tensor | NDArray:
-        if self._out_as_np:
+    def _cast_out(self, data: torch.Tensor, accept=True) -> torch.Tensor | NDArray:
+        if self._out_as_np and accept:
             data = data.cpu().numpy()
         return data
 
@@ -415,6 +421,11 @@ class NavigationEnv(TrueVecEnv):
 
         info = {}
 
+        obs = flatten(self._observation_space, obs_dict).clone()
+        obs_out = self._cast_out(obs)
+        info[self.KEY_FINAL_OBS] = obs_out
+        info[self.KEY_FINAL_INFO] = deepcopy(info)
+
         if torch.any(done):
             indices = torch.where(done)[0]
 
@@ -423,12 +434,17 @@ class NavigationEnv(TrueVecEnv):
                 self._render()
 
             # reset specific envs
-            _obs_dict, _info = self.reset(indices)
-            obs_dict = self.__get_obs()  # TODO: 这里可以改进为利用上前面_obs_dict信息的
+            obs_, info_ = self.reset(indices, cast_out=False)
 
-        obs = flatten(self._observation_space, obs_dict)
+            # 合并信息
+            obs_ = cast(torch.Tensor, obs_)
+            obs[indices] = obs_
+            info.update(info_)
+
+            obs_out = self._cast_out(obs)
+
         return (
-            self._cast_out(obs),
+            obs_out,
             self._cast_out(rew),
             self._cast_out(terminated),
             self._cast_out(truncated),

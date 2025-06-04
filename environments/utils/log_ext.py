@@ -33,23 +33,6 @@ def setup_logging():
     )
 
 
-@dataclass
-class LogConfig:
-    """可传入进程的日志配置"""
-
-    logger: str | None = None
-    """名称, 默认为None, 即root logger"""
-    level: int = logging.INFO
-    format: str | None = None
-    """行格式, 默认为 [%(levelname)s|%(asctime)s] %(message)s """
-    date_format: str | None = None
-    """时间格式, 默认为 %m-%d %H:%M:%S """
-    file_path: str | None = None
-    """输出文件路径, 默认为不输出"""
-    file_append: bool = True
-    """是否不覆盖写入, 默认为不覆盖"""
-
-
 def reset_logger(
     logger: Union[logging.Logger, str, None] = None,
     level: int = logging.INFO,
@@ -98,6 +81,29 @@ def reset_logger(
         h.setLevel(lv)
         logger.addHandler(h)
     return logger
+
+
+@dataclass
+class LogConfig:
+    """可传入进程的日志配置"""
+
+    logger: str | None = None
+    """名称, 默认为None, 即root logger"""
+    level: int = logging.INFO
+    format: str | None = None
+    """行格式, 默认为 [%(levelname)s|%(asctime)s] %(message)s """
+    date_format: str | None = None
+    """时间格式, 默认为 %m-%d %H:%M:%S """
+    file_path: str | None = None
+    """输出文件路径(别用Path,传不到进程), 默认为不输出"""
+    file_append: bool = True
+    """是否不覆盖写入, 默认为不覆盖"""
+
+    def make(self):
+        cfg = self.__dict__
+        logr = reset_logger(**cfg)
+        logr.debug(("init with config", cfg))
+        return logr
 
 
 def reset_root_logger(stdout_level: int = logging.INFO):

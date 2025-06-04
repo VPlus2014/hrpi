@@ -7,52 +7,7 @@ import gymnasium as gym
 from tqdm import tqdm
 from contextlib import ContextDecorator
 
-
-class ConextTimer(ContextDecorator):
-    def __init__(self, name: str):
-        self.name = name
-        self.t = 0
-        self.dt = 0
-        self._lv = 0
-
-    def reset(self):
-        self.t = 0
-        self.dt = 0
-
-    def __enter__(self):
-        self.push()
-
-    def __exit__(self, *exc):
-        self.pop()
-
-    def push(self):
-        self._lv += 1
-        if self._lv == 1:
-            self._t0 = time.time()
-
-    def pop(self):
-        if self._lv > 0:
-            self._lv -= 1
-            if self._lv == 0:
-                self.dt = dt = time.time() - self._t0
-                self.t += dt
-
-
-def init_seed(seed: int):
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
-    torch.set_num_threads(1)
-    # torch.set_num_interop_threads(1)
-    print(f"Seed initialized to {seed}")
-
-
-def as_np(x: torch.Tensor | np.ndarray) -> np.ndarray:
-    if isinstance(x, torch.Tensor):
-        return x.detach().cpu().numpy()
-    else:
-        return x
+from tools import init_seed, as_np, as_tsr, ConextTimer
 
 
 def main():
@@ -66,7 +21,7 @@ def main():
     global_max_steps = total_frames // nenvs
     env_desc_ms = 50
     env_sim_dt_ms = env_desc_ms
-    env_max_steps = 1000
+    env_max_steps = 10
     render_mode = [
         None,
         "tacview",

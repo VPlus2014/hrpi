@@ -1,16 +1,16 @@
 from __future__ import annotations
 from copy import deepcopy
-from typing import List, Tuple, Union, Sequence, TYPE_CHECKING, SupportsIndex, cast
-from dataclasses import dataclass, field
-from typing import List, Union
+import logging
+from typing import Any, Union, Sequence, TYPE_CHECKING, SupportsIndex, cast
 from heapq import nsmallest
-import torch
 from .protocol import RolloutBatchProtocol, Batch
 import numpy as np
 
 _ShapeLike = Union[SupportsIndex, Sequence[SupportsIndex]]
 
-_debug = False
+
+_DEBUG = True
+_LOGR = logging.getLogger(__name__)
 # class Trajectory:
 
 #     def __init__(
@@ -36,20 +36,21 @@ class RETrajReplayBuffer:
     def __init__(
         self,
         max_steps: int,  # 最大决策步数 L
-        max_trajs: int,  # 最大轨迹数 N
-        num_envs: int,  # 并行采样环境数
+        max_trajs: int,  # (面向训练)最大采样轨迹数 N
+        num_envs: int,  # (面向环境)并行采样环境数
         obs_shape: Sequence[int],  # 观测空间维度
         act_shape: Sequence[int],  # 动作空间维度
         float_dtype=np.float32,
-        state_dtype: np.dtype | None = None,  # 默认为 float_dtype
-        action_dtype: np.dtype | None = None,  # 默认为 float_dtype
+        state_dtype: np.dtype | Any | None = None,  # 默认为 float_dtype
+        action_dtype: np.dtype | Any | None = None,  # 默认为 float_dtype
+        logr=_LOGR,
     ):
         assert len(obs_shape) > 0, ("obs_shape must be non-empty", obs_shape)
         assert len(act_shape) > 0, ("act_shape must be non-empty", act_shape)
 
         self._max_steps = max_steps
         self._max_trajs = max_trajs
-        self._traj_cap = _traj_cap = max_trajs + num_envs
+        self._traj_cap = _traj_cap = max_trajs + num_envs  # 实际大小
         self._ntraj = 0  # 当前存储轨迹数
         self._num_envs = num_envs
         self._obs_shape = obs_shape = tuple(obs_shape)
@@ -57,6 +58,7 @@ class RETrajReplayBuffer:
         self._float_dtype = float_dtype
         self._state_dtype = state_dtype or float_dtype  # None->float_dtype
         self._action_dtype = action_dtype or float_dtype  # None->float_dtype
+        self.logr = logging.getLogger(logr.name)
 
         self.__check()
 
@@ -87,11 +89,6 @@ class RETrajReplayBuffer:
         assert max_steps > 0, ("max_steps must be positive", max_steps)
         assert max_trajs > 0, ("max_trajs must be positive", max_trajs)
         assert num_envs > 0, ("num_envs must be positive", num_envs)
-        assert max_trajs >= num_envs, (
-            "expect max_trajs>=num_envs, got",
-            max_trajs,
-            num_envs,
-        )
         assert len(obs_shape) > 0, ("obs_shape must be non-empty", obs_shape)
         assert len(act_shape) > 0, ("act_shape must be non-empty", act_shape)
 
@@ -99,6 +96,9 @@ class RETrajReplayBuffer:
     def size(self):
         """有效轨迹数"""
         return self._ntraj  # @size
+
+    def __len__(self):
+        return self._ntraj  # @len
 
     def sample(
         self,
@@ -158,6 +158,7 @@ class RETrajReplayBuffer:
         self._ptrE2N[:] = np.arange(self._num_envs)
         self._erase_trajs()
         self._reset_rank()
+        self._reset_ntaj()
 
     def _reset_rank(self):
         cap = self._traj_cap
@@ -168,8 +169,10 @@ class RETrajReplayBuffer:
         self._obs[:, idx, ...] = 0
         self._act[:, idx, ...] = 0
         self._rew[:, idx, ...] = 0
-        self._term[:, idx, ...] = False
+        self._term[:, idx, ...] = True
         self._trunc[:, idx, ...] = True
+        self._term[0, idx, ...] = False  # 第一个状态不为终止态
+        self._trunc[0, idx, ...] = False
         if self._logpa is not None:
             self._logpa[:, idx, ...] = 1
 
@@ -188,12 +191,22 @@ class RETrajReplayBuffer:
     def _update_rank(self, traj_idx: np.ndarray | slice):
         self._ranktime += 1
         self._rank[traj_idx] = self._ranktime  # 更新优先级
-        if _debug:
-            print("rank=", self._ranktime, "@", traj_idx)
-            print("all rank", self._rank)
+        if _DEBUG:
+            self.logr.debug(
+                (
+                    "rank<-",
+                    self._ranktime,
+                    "@",
+                    traj_idx,
+                    # "all rank=",
+                    # self._rank,
+                )
+            )
 
-    def _on_len_change(self):
-        self._ntraj = sum(self._done)  # 可采样的轨迹数
+    def _reset_ntaj(self):
+        self._ntraj = int(self._done.sum())  # 可采样的轨迹数
+        if _DEBUG:
+            self.logr.debug(f"ntraj->{self._ntraj}")
 
     def add(
         self,
@@ -222,6 +235,7 @@ class RETrajReplayBuffer:
             "expect",
             self._num_envs,
         )
+        logr = self.logr
         done = term | trunc
         # 1. 常规数据
         traj_idx = self._ptrE2N
@@ -229,14 +243,14 @@ class RETrajReplayBuffer:
         need_alloc = t_idx == 0  # 空轨迹写前的预处理
         if need_alloc.any():
             _traj_idx = traj_idx[need_alloc]
-            if _debug:
-                print("clean", _traj_idx)
+            if _DEBUG:
+                logr.debug(("clean", _traj_idx))
             self._erase_trajs(_traj_idx)  # 擦除轨迹
             self._update_rank(_traj_idx)  # 更新优先级
         tcap = self._max_steps  # 决策片段长度
-        if _debug:
+        if _DEBUG:
             assert (t_idx < tcap).all(), "buffer overflow"
-            print("write", traj_idx)
+            # print("write", traj_idx)
         self._obs[t_idx, traj_idx, ...] = obs
         self._act[t_idx, traj_idx, ...] = act
         self._rew[t_idx, traj_idx, ...] = rew
@@ -253,17 +267,23 @@ class RETrajReplayBuffer:
         _need_realloc = _done | (self._alens[traj_idx] >= tcap)
         if _need_realloc.any():
             _env_idx = np.where(_need_realloc)[0]  # \subset [0,nenvs)
-            _traj_idx = traj_idx[_env_idx]
-            self._done[_traj_idx] = True  # 标记结束
+            _traj_idx0 = traj_idx[_env_idx]
+            self._done[_traj_idx0] = True  # 标记结束
+            if _DEBUG:
+                logr.debug(("done@", _traj_idx0.tolist()))
 
             _traj_idx = self._realloc_traj(_env_idx)  # 重新分配traj槽
             self._ptrE2N[_env_idx] = _traj_idx
             self._alens[_traj_idx] = 0  # 重置traj长度
             self._done[_traj_idx] = False  # 重置done标志
-            if _debug:
-                print("alloc full envs->new traj", _env_idx, "->", _traj_idx)
+            if _DEBUG:
+                logr.debug(("alloc full envs->new traj", _env_idx, "->", _traj_idx))
 
-        self._on_len_change()
+            self._reset_ntaj()
+
+    @property
+    def max_size(self):
+        return self._max_trajs
 
 
 # def merge_trajs(

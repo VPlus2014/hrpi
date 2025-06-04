@@ -29,6 +29,8 @@ class BaseModel(ABC):
     STATUS_ALIVE = 0  # 运行中
     STATUS_DEAD = 1  # 结束
 
+    logr = LOGR
+
     def __init__(
         self,
         id: torch.Tensor | int,

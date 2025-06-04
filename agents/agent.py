@@ -1,4 +1,5 @@
 from __future__ import annotations
+import logging
 from typing import TYPE_CHECKING, Union
 import torch
 import torch.nn as nn
@@ -17,21 +18,39 @@ DeviceLikeType: TypeAlias = Union[str, torch.device, int]
 class Agent(nn.Module):
     """智能体协议"""
 
+    logr: logging.Logger = logging.getLogger(__name__)
+
     def __init__(
         self,
         name: str,
         observation_space: spaces.Box,
         action_space: spaces.Box,
-        batch_size: int,
+        buffer_size: int = 1000000,
+        batch_size: int = 128,
         num_envs: int = 1,
         writer: SummaryWriter | None = None,
         device: DeviceLikeType = "cpu",
         dtype: torch.dtype = torch.float,
     ):
+        """
+        智能体协议
+
+        Args:
+            name (str): _description_
+            observation_space (spaces.Box): _description_
+            action_space (spaces.Box): _description_
+            buffer_size (int): 回放池采样容量
+            batch_size (int): 训练 batch size
+            num_envs (int, optional): 并行写入环境数. Defaults to 1.
+            writer (SummaryWriter | None, optional): TensorBoard 记录器. Defaults to None.
+            device (DeviceLikeType, optional): 计算设备. Defaults to "cpu".
+            dtype (torch.dtype, optional): 数值精度. Defaults to torch.float.
+        """
         super().__init__()
         self.name = name
         self.observation_space = observation_space
         self.action_space = action_space
+        self.buffer_size = buffer_size
         self.batch_size = batch_size
         self.num_envs = num_envs
         self.writer = writer
@@ -56,7 +75,7 @@ class Agent(nn.Module):
     @property
     def observation_max(self) -> torch.Tensor:
         raise NotImplementedError
-    
+
     @property
     def action_min(self) -> torch.Tensor:
         raise NotImplementedError
@@ -64,8 +83,6 @@ class Agent(nn.Module):
     @property
     def action_max(self) -> torch.Tensor:
         raise NotImplementedError
-
-
 
     @abstractmethod
     def evaluate(self, state: np.ndarray | torch.Tensor) -> torch.Tensor:

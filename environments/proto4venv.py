@@ -7,17 +7,18 @@ import gymnasium
 import torch
 from gymnasium.vector.async_vector_env import AsyncVectorEnv
 
+_EnvIndexType = Union[torch.Tensor, Sequence[int], slice, None]
 
-_EnvIndexType = Union[int, torch.Tensor, Sequence[int], slice, None]
+# from gymnasium.vector.sync_vector_env import SyncVectorEnv
 
-from gymnasium.vector.sync_vector_env import SyncVectorEnv
-class TrueVecEnv(gymnasium.Env):
+
+class TrueSyncVecEnv(gymnasium.Env):
     name: str
 
     # 并仿截断/终止处理机制, 参照 gymnasium.vector.sync_vector_env.SyncVectorEnv
     KEY_FINAL_OBS = "final_observation"  # 上一局终末状态
     KEY_FINAL_INFO = "final_info"  # 上一局调试信息
-    KEY_FINAL_OBS_MASK = f"_{KEY_FINAL_OBS}" # bool
+    KEY_FINAL_OBS_MASK = f"_{KEY_FINAL_OBS}"  # bool
     KEY_FINAL_INFO_MASK = f"_{KEY_FINAL_INFO}"
 
     def __init__(
