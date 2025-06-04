@@ -9,7 +9,7 @@ import numpy as np
 _ShapeLike = Union[SupportsIndex, Sequence[SupportsIndex]]
 
 
-_DEBUG = True
+_DEBUG = False
 _LOGR = logging.getLogger(__name__)
 # class Trajectory:
 

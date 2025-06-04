@@ -364,7 +364,7 @@ def quat2prodmat(q: torch.Tensor) -> torch.Tensor:
     四元数左乘等效为矩阵乘法（线性算子作用）
 
     $$
-    q \otimes p = M(q) p, \forall p
+    q \otimes p = M(q) p, \forall p \in\mathbb{H}
     $$
 
     Args:
@@ -394,6 +394,40 @@ def mati(q: torch.Tensor) -> torch.Tensor:
 
     mat_flat = (q0, -q1, -q2, -q3, q1, q0, q3, -q2, q2, -q3, q0, q1, q3, q2, -q1, q0)
     return torch.stack(mat_flat, -1).reshape(q0.shape + (4, 4))
+
+@torch.jit.script
+def _quat2mat_sqrt(q: torch.Tensor) -> torch.Tensor:
+    q0, q1, q2, q3 = q.split([1, 1, 1, 1], -1)  # (...,1)
+    nq0 = -q0
+    nq1 = -q1
+    nq2 = -q2
+    nq3 = -q3
+    m = _stack(
+        [
+            _cat([q0, nq1, nq2, nq3], -1),
+            _cat([nq1, nq0, q3, nq2], -1),
+            _cat([nq2, nq3, nq0, q1], -1),
+            _cat([nq3, q2, nq1, nq0], -1),
+        ],
+        -2,
+    )
+    return m
+
+def quat2mat_sqrt(q: torch.Tensor) -> torch.Tensor:
+    r"""Computes the square root of the rotation matrix of a quaternion.
+
+    $$
+    S=J M(Q)\\
+    S^2 h = Q\otimes h \otimes Q^*, \forall h \in \mathbb{H}
+    $$
+
+    Args:
+        q: The quaternion orientation in (w, x, y, z). shape: (..., 4).
+
+    Rets:
+        The square root of the rotation matrix of the quaternion. shape: (..., 4, 4).
+    """
+    return _quat2mat_sqrt(q)
 
 
 @torch.jit.script
@@ -451,7 +485,9 @@ def quat_mul(p: torch.Tensor, q: torch.Tensor) -> torch.Tensor:
 def _crossmat_kern(v: torch.Tensor) -> torch.Tensor:
     x, y, z = v.unbind(dim=-1)  # (...,1)
     _0 = torch.zeros_like(x)
-    return _cat([_0, -z, y, z, _0, -x, -y, x, _0], -1).reshape(
+    return _cat([_0, -z, y, 
+                 z, _0, -x, 
+                 -y, x, _0], -1).reshape(
         v.shape[:-1] + (3, 3)
     )  # (...,3,3)
 

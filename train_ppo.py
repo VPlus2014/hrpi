@@ -1,4 +1,3 @@
-from contextlib import ContextDecorator
 from datetime import datetime
 import logging
 import time
@@ -11,8 +10,8 @@ from torch.utils.tensorboard.writer import SummaryWriter
 from tqdm import tqdm
 from environments import NavigationEnv, EvasionEnv
 from agents import PPOContinuous
-from tools import as_np, as_tsr, init_seed, ConextTimer, set_max_threads
 from decimal import getcontext
+from tools import as_np, as_tsr, init_seed, ConextTimer
 
 
 def main():
@@ -21,19 +20,20 @@ def main():
     from environments.utils import log_ext
 
     ROOT_DIR = Path(__file__).parent
-    nenvs = 4000
-    batch_size = 1000
-    buffer_size = 2 * batch_size  # 回放池最大轨迹数
+    nenvs = 8000
+    envcls = NavigationEnv
     env_out_torch = False
-    env_max_steps = 100
+    env_max_steps = 500
     # env_out_mode = "pytorch" if env_out_torch else "numpy"
     env_device = [
-        torch.device("cpu"),
         torch.device("cuda" if torch.cuda.is_available() else "cpu"),
+        torch.device("cpu"),
     ][-1]
     th_float = torch.float32
     algoname = "ppo"
-    envcls = NavigationEnv
+    max_train_episodes = int(1e6)
+    batch_size = 1000
+    buffer_size = 2 * batch_size  # 回放池最大轨迹数
     RUNS_DIR = ROOT_DIR / "runs"
     TASK_DIR = RUNS_DIR / "{}_{}_{}".format(
         envcls.__name__,
@@ -42,14 +42,12 @@ def main():
     )
     WEIGHTS_DIR = TASK_DIR / "weights"
     WEIGHTS_DIR.mkdir(parents=True, exist_ok=True)
-    pretrn_dir = TASK_DIR / "NavigationEnv_ppo_20250604_190053" / "weights"
+    pretrn_dir = TASK_DIR / "NavigationEnv_ppo_20250604_191442" / "weights"
     logr = log_ext.reset_logger(
         f"{__name__}",
         level=logging.DEBUG,
         file_path=str(TASK_DIR / "main.log"),
     )
-
-    set_max_threads(8)
     init_seed(10086)
 
     writer = SummaryWriter(TASK_DIR / "tb")
@@ -58,7 +56,7 @@ def main():
         sim_step_size_ms=50,
         max_sim_ms=50 * env_max_steps,
         waypoints_total_num=10,
-        waypoints_visible_num=3,
+        waypoints_visible_num=2,
         position_min_limit=[-5000, -5000, -10000],
         position_max_limit=[5000, 5000, 0],
         render_mode="tacview",
@@ -93,10 +91,10 @@ def main():
         buffer_size=buffer_size,
         learn_batch_size=batch_size,
         mini_batch_size=max(int(batch_size // 8), 1) * 2,
-        lr_a=5e-4,
-        actor_hidden_sizes=[128, 128, 128, 128, 128],
-        lr_c=5e-4,
-        critic_hidden_sizes=[128, 128, 128, 128, 128],
+        lr_a=5e-3,
+        actor_hidden_sizes=[128, 128],
+        lr_c=5e-3,
+        critic_hidden_sizes=[128, 128],
         gamma=0.99,
         gae_lambda=0.95,
         epsilon=0.2,
@@ -137,13 +135,8 @@ def main():
     wallt_sim = 0.0
     wallt_learn = 0.0
     wallt_infer = 0.0
-    _tmp_t00 = time.time()
-
-    with tmr_env:
-        obs, _ = train_env.reset()
 
     # train
-    max_train_episodes = int(1e6)
     progress_bar = tqdm(total=max_train_episodes, desc="Train")
     global_step = 0
     global_episode = 0
@@ -154,83 +147,94 @@ def main():
     _echo_k = 0
     _learn_k = 0
     _learn_k0 = 1
-    while progress_bar.n < max_train_episodes:
-        with tmr_learn:
-            # 更新智能体
-            _learn_k = global_episode // batch_size
-            if _learn_k > _learn_k0:
-                assert (
-                    len(agent.replay_buffer) >= batch_size
-                ), "Replay buffer is too small"
-                _learn_k0 = _learn_k
-                agent.update(progress_bar.n)
-
-            # 存储智能体
-            _save_k = progress_bar.n // 1000
-            if _save_k > _save_k0:
-                _save_k0 = _save_k
-                # torch.save(agent.actor, WEIGHTS_DIR / "actor.pt")
-                for model, fname in [
-                    (agent.actor, "actor.pth"),
-                    (agent.critic, "critic.pth"),
-                ]:
-                    model = cast(torch.nn.Module, model)
-                    fo = str(WEIGHTS_DIR / fname)
-                    torch.save(model.state_dict(), fo)
-                    logr.debug((f"{model.__class__.__name__}>>", fo))
-
-        with tmr_infer:
-            # obs_norm = normalize(obs, low, high)
-            act, act_log_prob = agent.choose_action(obs)
-
+    _tmp_t00 = time.time()
+    try:
         with tmr_env:
-            obs_next, rew, terminated, truncated, info = train_env.step(act)
-            train_env.render()
+            obs, _ = train_env.reset()
+        while progress_bar.n < max_train_episodes:
+            with tmr_learn:
+                # 更新智能体
+                _learn_k = global_episode // batch_size
+                if _learn_k > _learn_k0:
+                    assert (
+                        len(agent.replay_buffer) >= batch_size
+                    ), "Replay buffer is too small"
+                    _learn_k0 = _learn_k
+                    agent.update(progress_bar.n)
 
-        with tmr_learn:
-            final_obs = info[train_env.KEY_FINAL_OBS]
+                # 存储智能体
+                _save_k = progress_bar.n // 1000
+                if _save_k > _save_k0:
+                    _save_k0 = _save_k
+                    # torch.save(agent.actor, WEIGHTS_DIR / "actor.pt")
+                    for model, fname in [
+                        (agent.actor, "actor.pth"),
+                        (agent.critic, "critic.pth"),
+                    ]:
+                        model = cast(torch.nn.Module, model)
+                        fo = str(WEIGHTS_DIR / fname)
+                        torch.save(model.state_dict(), fo)
+                        logr.debug((f"{model.__class__.__name__}>>", fo))
 
-            agent.post_act(
-                obs=obs,
-                obs_next=obs_next,
-                final_obs=final_obs,
-                act=act,
-                act_log_prob=act_log_prob,
-                rew=rew,
-                terminated=terminated,
-                truncated=truncated,
-                global_step=progress_bar.n,
-            )
+            with tmr_infer:
+                # obs_norm = normalize(obs, low, high)
+                act, act_log_prob = agent.choose_action(obs)
 
-            obs = obs_next
-            done = truncated | truncated
+            with tmr_env:
+                obs_next, rew, terminated, truncated, info = train_env.step(act)
+                train_env.render()
 
-        global_step += 1
+            with tmr_learn:
+                final_obs = info[train_env.KEY_FINAL_OBS]
 
-        _tmp_t1 = time.time()
-        _echo_k = int((_tmp_t1 - _tmp_t00) / echo_interval)
-        if _echo_k > _echo_k0:
-            _echo_k0 = _echo_k
-            wallt_sim = tmr_env.t
-            wallt_infer = tmr_infer.t
-            wallt_learn = tmr_learn.t
-            tms = np.asarray([wallt_sim, wallt_infer, wallt_learn])
-            tms_ratio = tms / np.sum(tms)
-            sec_per_batch = (_tmp_t1 - _tmp_t00) / global_step
-            ms_per_batch = int(sec_per_batch * 1000)
-            progress_bar.set_postfix(
-                {
-                    "ms/B": f"{ms_per_batch}",
-                    "Sim": f"{tms_ratio[0]:.1%}",  # sim
-                    "Infer": f"{tms_ratio[1]:.1%}",  # infer
-                    "Learn": f"{tms_ratio[2]:.1%}",  # learn
-                }
-            )
+                agent.post_act(
+                    obs=obs,
+                    obs_next=obs_next,
+                    final_obs=final_obs,
+                    act=act,
+                    act_log_prob=act_log_prob,
+                    rew=rew,
+                    terminated=terminated,
+                    truncated=truncated,
+                    global_step=progress_bar.n,
+                )
 
-        ndone = done.sum().item()
-        if ndone > 0:
-            global_episode += ndone
-            progress_bar.update(ndone)
+                obs = obs_next
+                done = truncated | truncated
+
+            global_step += 1
+
+            _tmp_t1 = time.time()
+            _echo_k = int((_tmp_t1 - _tmp_t00) / echo_interval)
+            if _echo_k > _echo_k0:
+                _echo_k0 = _echo_k
+                wallt_sim = tmr_env.t
+                wallt_infer = tmr_infer.t
+                wallt_learn = tmr_learn.t
+                tms = np.asarray([wallt_sim, wallt_infer, wallt_learn])
+                tms_ratio = tms / np.sum(tms)
+                sec_per_batch = (_tmp_t1 - _tmp_t00) / global_step
+                ms_per_batch = int(sec_per_batch * 1000)
+                progress_bar.set_postfix(
+                    {
+                        "ms/B": f"{ms_per_batch}",
+                        "Sim": f"{tms_ratio[0]:.1%}",  # sim
+                        "Infer": f"{tms_ratio[1]:.1%}",  # infer
+                        "Learn": f"{tms_ratio[2]:.1%}",  # learn
+                    }
+                )
+
+            ndone = done.sum().item()
+            if ndone > 0:
+                global_episode += ndone
+                progress_bar.update(ndone)
+    except KeyboardInterrupt:
+        pass
+    except Exception as e:
+        logr.error(f"Exception: {e}\n{traceback.format_exc()}")
+    finally:
+        progress_bar.close()
+        train_env.close()
 
 
 if __name__ == "__main__":

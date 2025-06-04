@@ -1,5 +1,7 @@
 from __future__ import annotations
-import inspect
+import os
+
+os.environ["NUMEXPR_MAX_THREADS"] = str(os.cpu_count())
 import logging
 from typing import TYPE_CHECKING, TypeVar
 import torch
@@ -10,6 +12,7 @@ from typing import cast
 from tianshou.data import Batch
 from torch.utils.data.sampler import BatchSampler, SubsetRandomSampler
 from torch.nn.utils import clip_grad_norm_, clip_grad_value_
+
 
 as_tsr = torch.asarray
 _DEBUG = True
@@ -178,6 +181,8 @@ class PPOContinuous(Agent):
             )
 
         self.returns = np.zeros((self.num_envs, 1))
+
+        import inspect
 
         frame = inspect.currentframe()
         if frame is not None:
@@ -554,10 +559,53 @@ class PPOContinuous(Agent):
         actor_loss_ = actor_loss.item()
         critic_loss_ = critic_loss.item()
 
-        if self.writer:
-            self.writer.add_scalar(f"loss/{self.name}_actor", actor_loss_, global_step)
-            self.writer.add_scalar(
-                f"loss/{self.name}_critic", critic_loss_, global_step
+        sw = self.writer
+        if sw:
+            name = self.name
+            dr = cast(torch.Tensor, ratio - 1)
+            sw.add_scalar(f"actor/loss/{name}", actor_loss_, global_step)
+            sw.add_scalar(f"critic/loss/{name}", critic_loss_, global_step)
+            sw.add_scalar(
+                f"actor/entropy/{name}/mean", dist_entropy.mean().item(), global_step
+            )
+            sw.add_scalar(
+                f"actor/entropy/{name}/std", dist_entropy.std().item(), global_step
+            )
+            sw.add_scalar(f"actor/ratio-1/{name}/mean", dr.mean().item(), global_step)
+            sw.add_scalar(f"actor/ratio-1/{name}/std", dr.std().item(), global_step)
+            sw.add_scalar(f"critic/adv/{name}/GAE_mean", adv.mean().item(), global_step)
+            sw.add_scalar(f"critic/adv/{name}/GAE_std", adv.std().item(), global_step)
+            sw.add_scalar(
+                f"critic/adv/{name}/vanilla_mean", delta.mean().item(), global_step
+            )
+            sw.add_scalar(
+                f"critic/adv/{name}/vanilla_std", delta.std().item(), global_step
+            )
+            sw.add_scalar(
+                f"critic/vs/{name}/lambda_mean", v_target.mean().item(), global_step
+            )
+            sw.add_scalar(
+                f"critic/vs/{name}/lambda_std", v_target.std().item(), global_step
+            )
+            sw.add_scalar(
+                f"critic/vs/{name}/vanilla_mean", hV1t.mean().item(), global_step
+            )
+            sw.add_scalar(
+                f"critic/vs/{name}/vanilla_std", hV1t.std().item(), global_step
+            )
+            sw.add_scalar(
+                f"critic/vs/{name}/pred_mean", hV1p.mean().item(), global_step
+            )
+            sw.add_scalar(f"critic/vs/{name}/pred_std", hV1p.std().item(), global_step)
+            sw.add_scalar(
+                f"critic/lr/{name}",
+                self.optimizer_critic.param_groups[0]["lr"],
+                global_step,
+            )
+            sw.add_scalar(
+                f"critic/lr/{name}/actor",
+                self.optimizer_actor.param_groups[0]["lr"],
+                global_step,
             )
         if _DEBUG:
             logr.debug(

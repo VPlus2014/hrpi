@@ -70,8 +70,8 @@ class PointMassAircraft(BaseAircraft):
         self._a_tmax = 7.0  #
         self._alpha_max = math.radians(15)  # 最大迎角(安全阈值<=15 deg), unit: rad
         #
-        self._tau_mu = 0.3  # 滚转响应 惯性时间常数 unit: sec
-        self._tau_alpha = 0.3  # 迎角响应 惯性时间常数 unit: sec
+        self._tau_mu = 2.0  # 滚转响应 惯性时间常数 unit: sec
+        self._tau_alpha = 2.0  # 迎角响应 惯性时间常数 unit: sec
         self._dot_mu_max = math.radians(360 / 3)  # 3 秒一圈
         self._dot_alpha_max = math.radians(5)
         #
@@ -109,8 +109,8 @@ class PointMassAircraft(BaseAircraft):
         self._tas[env_indices] = self._ic_tas[env_indices]
         self.set_alpha(self._ic_alpha[env_indices], env_indices)
 
-        self._ppgt_rpy_ew2Qew()
-        self.__propagate()
+        self._ppgt_rpy_ew2Qew(env_indices)
+        self._propagate(env_indices)
         pass
 
     def run(self, action: np.ndarray | torch.Tensor):
@@ -142,22 +142,23 @@ class PointMassAircraft(BaseAircraft):
         self.set_mu(mu_next)
         self.set_alpha(alpha_next)
 
-        self.__propagate()
+        self._propagate()
         super().run(action)
 
-    def __propagate(self):
+    def _propagate(self, index: _SupportedIndexType = None):
         """(reset&step 复用)运动学关键状态(TAS,Qew,mu,alpha)->全体缓存状态"""
+        index = self.proc_batch_index(index)
         # 姿态一致
-        self._ppgt_rpy_wb2Qwb()
-        self._ppgt_QewQwb_to_Qeb()
+        self._ppgt_rpy_wb2Qwb(index)
+        self._ppgt_QewQwb_to_Qeb(index)
         ## 欧拉角
-        self._ppgt_Qeb2rpy_eb()
-        self._ppgt_Qew2rpy_ew()
+        self._ppgt_Qeb2rpy_eb(index)
+        self._ppgt_Qew2rpy_ew(index)
 
         # 速度一致
-        self._ppgt_tas2Vw()
-        self._ppgt_Vw2Vb()
-        self._ppgt_Vw2Ve()
+        self._ppgt_tas2Vw(index)
+        self._ppgt_Vw2Vb(index)
+        self._ppgt_Vw2Ve(index)
 
     def _run_ode(
         self,

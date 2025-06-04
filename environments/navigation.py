@@ -111,6 +111,7 @@ class NavigationEnv(TrueSyncVecEnv):
         """坐标原点高度, m"""
 
         self.render_mode = render_mode
+        self.render_env_idx = 0
         if self.render_mode:
             assert render_dir is not None
             if not render_dir.exists():
@@ -124,7 +125,7 @@ class NavigationEnv(TrueSyncVecEnv):
 
         # 创建战斗机模型
         tas = 340 + _0f
-        self.aircraft =pln= PointMassAircraft(
+        self.aircraft = pln = PointMassAircraft(
             id=0x10086,
             acmi_name="J-10",
             call_sign="agent",
@@ -150,7 +151,11 @@ class NavigationEnv(TrueSyncVecEnv):
             shape=(3,),
             dtype=np_float,
         )  # 局部地轴系位置
-        rmax = 5000
+        rmax = 10e3
+        Vmin = 150.0
+        Vmax = 400.0
+        hmin = alt0 - rmax
+        hmax = alt0 + rmax
         self._observation_space["aircraft_velocity_g"] = spaces.Box(
             low=np.asarray([-rmax, -rmax, -rmax], dtype=np_float),
             high=np.asarray([rmax, rmax, rmax], dtype=np_float),
@@ -199,14 +204,25 @@ class NavigationEnv(TrueSyncVecEnv):
 
         # deffine reward functions
         self._reward_fns: list[BaseRewardFn] = [
-            ReachNavigationPointRewardFn(min_distance_m=200, weight=0),
-            ApproachNavigationPointRewardFn(weight=1),
+            ReachNavigationPointRewardFn(min_distance_m=200, weight=100),
+            ApproachNavigationPointRewardFn(weight=1, version=4),
+            #
+            LowAltitudeRewardFn(
+                min_altitude_m=hmin,
+                max_altitude_m=hmax,
+                weight=1,
+            ),
+            LowAirSpeedRewardFn(
+                min_airspeed_mps=Vmin,
+                max_airspeed_mps=Vmax,
+                weight=1,
+            ),
         ]
 
         # define termination functions
         self._termination_fns: list[BaseTerminationFn] = [
-            LowAltitudeTerminationFn(min_altitude_m=100),
-            LowAirSpeedTerminationFn(min_airspeed_mps=10),
+            LowAltitudeTerminationFn(min_altitude_m=hmin),
+            LowAirSpeedTerminationFn(min_airspeed_mps=Vmin),
             ReachNavigationPointMaxNumTerminationFn(),
             TimeoutTerminationFn(1 * 60),
         ]
@@ -229,11 +245,12 @@ class NavigationEnv(TrueSyncVecEnv):
         nenvs: int,
         seed: int | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """产生一组路径点
+        r"""产生一组路径点
         TODO: 增加连续性约束，例如相邻点距、曲率，在约束下快速生成
 
         Returns:
-            navigation_points: shape (nenvs, N+n-1, 3)
+            navigation_points: shape (nenvs, N+horizon-1, 3).
+
             navigation_point_index: shape (nenvs, 1, 3)
         """
         device = self.device  # @generate_navigation_points
@@ -264,24 +281,29 @@ class NavigationEnv(TrueSyncVecEnv):
 
     def render_navigation_points(self):
         if self.render_mode:
-            env_idx = 0  # 选择渲染的环境编号
+            namefmt = "{}th navigation point"
+            callsignfmt = "waypoint_{}"
+            env_idx = self.render_env_idx  # 选择渲染的环境编号
+            index0 = self.cur_nav_point_index[env_idx, 0, 0].cpu().item()
             for i in range(self.waypoints_visible_num):
-                index = self.cur_nav_point_index[env_idx] + i  # (1,3)
-                navigation_point = torch.gather(
-                    self.navigation_points[env_idx], dim=1, index=index
-                ).squeeze(1)
+                waypoint_xyz = (
+                    self.navigation_points[env_idx, 0, :].cpu().numpy()
+                )  # (3,)
+                wpindex = index0 + i
 
-                index = index[0, 0].item()
-                navigation_point = ObjectState(
-                    sim_time_s=self.sim_time_s[0].item(),
-                    name="{}th navigation point".format(index),
-                    attr=WaypointAttr(name="{}th navigation point".format(index + 1)),
+                waypoint = ObjectState(
+                    sim_time_s=self.sim_time_s[env_idx].cpu().item(),
+                    name=namefmt.format(wpindex),
+                    attr=WaypointAttr(
+                        Next=namefmt.format(wpindex + 1),
+                        CallSign=callsignfmt.format(wpindex),
+                    ),
                     lat0=self._origin_lat,
                     lon0=self._origin_lon,
                     h0=self._origin_alt,
-                    pos_ned=navigation_point[0],
+                    pos_ned=waypoint_xyz,
                 )
-                self.__objects_states.append(navigation_point)
+                self.__objects_states.append(waypoint)
 
     def render_object_state(self, object_state: ObjectState):
         self.__objects_states.append(object_state)
@@ -312,16 +334,15 @@ class NavigationEnv(TrueSyncVecEnv):
         # print("navigation points: " , self.navigation_points)
         # print("navigation point index: ", self.navigation_point_index)
         # 设置飞机角度为正对着导航点
-        # selected_points = torch.gather(self.navigation_points, dim=1, index=self.navigation_point_index).squeeze(1)
-        # aer = ned2aer(selected_points[env_indices]-pln.position_g[env_indices])
-        # # print("aer: ", aer)
-        # pln.set_q_kg(
-        #     gamma = aer[..., 1:2],
-        #     chi = aer[..., 0:1],
-        #     env_indices = env_indices
-        # )
-        # euler = euler_from_quat(pln.q_kg[env_indices])
-        # print("euler: ", euler)
+        selected_points = torch.gather(
+            self.navigation_points, dim=1, index=self.cur_nav_point_index
+        ).squeeze(1)
+        aer = ned2aer(selected_points[env_indices] - pln.position_e(env_indices))
+        # print("aer: ", aer)
+        pln.set_gamma(aer[..., 1:2], env_indices)
+        pln.set_chi(aer[..., 0:1], env_indices)
+        pln._ppgt_rpy_ew2Qew(env_indices)
+        pln._propagate(env_indices)
 
         # reset simulation variables
         self._sim_time_ms[env_indices] = 0
@@ -378,7 +399,7 @@ class NavigationEnv(TrueSyncVecEnv):
     def step(self, action: torch.Tensor):
         step_num = self.agent_step_size_ms // self.sim_step_size_ms
         pln = self.aircraft  # @step
-        idx_rcd = 0  # 选择渲染的环境编号
+        idx_rcd = self.render_env_idx  # 选择渲染的环境编号
 
         for i in range(step_num):
             self._sim_time_ms[...] += self.sim_step_size_ms
@@ -402,10 +423,10 @@ class NavigationEnv(TrueSyncVecEnv):
                     name=acmi_id(int(pln.id[idx_rcd].item())),
                     attr=AircraftAttr(
                         Color=pln.acmi_color,
-                        TAS=f"{pln.tas(idx_rcd).item():.2f}",
+                        TAS="{:.2f}".format(pln.tas(idx_rcd).item()),
                     ),
-                    pos_ned=pln.position_e(idx_rcd).cpu(),
-                    rpy_rad=rpy_eb.cpu(),
+                    pos_ned=pln.position_e(idx_rcd).cpu().numpy(),
+                    rpy_rad=rpy_eb.cpu().numpy(),
                     lat0=self._origin_lat,
                     lon0=self._origin_lon,
                     h0=self._origin_alt,

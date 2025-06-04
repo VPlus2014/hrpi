@@ -10,7 +10,7 @@ from ...utils.math import ned2aer, vec_cosine
 
 
 class ApproachNavigationPointRewardFn(BaseRewardFn):
-    def __init__(self, weight: float = 1, version=3, record_dist=False) -> None:
+    def __init__(self, weight: float = 1, version=4, record_dist=False) -> None:
         super().__init__()
         self.weight = weight
         self._version = version
@@ -25,12 +25,13 @@ class ApproachNavigationPointRewardFn(BaseRewardFn):
             except AttributeError:
                 self.pre_distance = env.cur_nav_dist.clone()
 
-        self._dij_max = float(
+        self._Rmax = float(
             torch.norm(
                 (env.position_max_limit - env.position_min_limit).to(dtype=los.dtype),
                 p=2,
             ).item()
         )
+        self._Rmaxinv = 1.0 / self._Rmax
 
     def forward(self, env: NavigationEnv, plane, **kwargs) -> torch.Tensor:
         _version = self._version
@@ -56,19 +57,23 @@ class ApproachNavigationPointRewardFn(BaseRewardFn):
         #     - torch.abs(torch.cos(elev) - torch.cos(gamma))
         # )
         # distance_reward = -dij / self._dij_max
-        Rmax = self._dij_max
+        Rmaxinv = self._Rmaxinv
         if _version == 1:
             v = pln.velocity_e
             tas = pln.tas
             dR = -((v * los).sum(-1, keepdim=True) / dij)  # \dot|LOS|=(-v,LOS)/|LOS|
-            reward = -dR / Rmax  # 对应积分 |LOS(t_0)|-|LOS(t_f)|
+            reward = -dR * Rmaxinv  # 对应积分 |LOS(t_0)|-|LOS(t_f)|
             # return self.weight * v_proj.unsqueeze(-1) / 340
         elif _version == 2:  # 势差奖励
-            reward = (self.pre_distance - dij) / Rmax  # 对应积分 |LOS(t_0)|-|LOS(t_f)|
+            reward = (
+                self.pre_distance - dij
+            ) * Rmaxinv  # 对应积分 |LOS(t_0)|-|LOS(t_f)|
         elif _version == 3:  # 二次代价
-            reward = -((dij / Rmax) ** 2)  # 对应积分 \int_{t_0}^{t_f} |LOS(t)|^2 dt
+            reward = 1 - (
+                (dij * Rmaxinv) ** 2
+            )  # 对应积分 \int_{t_0}^{t_f} |LOS(t)|^2 dt
         elif _version == 4:  # L1代价
-            reward = -(dij / Rmax)  # 对应积分 \int_{t_0}^{t_f} |LOS(t)| dt
+            reward = 1 - (dij * Rmaxinv)  # 对应积分 T-\int_{t_0}^{t_f} |LOS(t)| dt
         else:
             raise NotImplementedError
         self.pre_distance = dij

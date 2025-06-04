@@ -48,12 +48,15 @@ class BaseRewardFn(ABC):
         plane: BaseAircraft,
         **kwargs,
     ) -> torch.Tensor:
-        rst = self.weight * self.forward(env, plane, **kwargs)
-        if isinstance(rst, torch.Tensor):
-            assert rst.shape == (env.num_envs, 1), (
-                f"reward shape should be (num_envs,1), but got",
-                rst.shape,
-                "@",
-                self.__class__.__name__,
-            )
+        try:
+            rst = self.weight * self.forward(env, plane, **kwargs)
+            if isinstance(rst, torch.Tensor):
+                assert rst.shape == (env.num_envs, 1), (
+                    f"reward shape should be (num_envs,1), but got",
+                    rst.shape,
+                    "@",
+                    self.__class__.__name__,
+                )
+        except Exception as e:
+            raise type(e)(e, self.__class__.__name__)
         return rst

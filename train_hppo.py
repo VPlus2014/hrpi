@@ -1,7 +1,7 @@
 import numpy as np
 import torch
 from pathlib import Path
-from torch.utils.tensorboard import SummaryWriter
+from torch.utils.tensorboard.writer import SummaryWriter
 from tqdm import tqdm
 from environments import NavigationEnv
 from agents import HPPOContinuous
@@ -9,6 +9,8 @@ from environments.utils.tacview_render import ObjectState, AircraftAttr, Waypoin
 
 
 as_tsr = torch.asarray
+
+
 def init_seed(seed: int):
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
@@ -99,6 +101,7 @@ def main():
             name="hppo",
             attr=AircraftAttr(
                 Color="Blue",
+                CallSign="PPOAgent",
             ),
             pos_ned=agent.expected_aircraft_position_g[0, ...].detach().cpu(),
         )

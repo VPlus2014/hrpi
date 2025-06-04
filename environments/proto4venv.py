@@ -88,12 +88,12 @@ class TrueSyncVecEnv(gymnasium.Env):
 
     @property
     def sim_time_ms(self) -> torch.Tensor:
-        """仿真时间(ms)"""
+        """仿真时间(ms), shape=(N, 1)"""
         return self._sim_time_ms
 
     @property
     def sim_time_s(self) -> torch.Tensor:
-        """仿真时间(s)"""
+        """仿真时间(s), shape=(N, 1)"""
         return self._sim_time_s
 
     def sync_sim_time(self, index=None):

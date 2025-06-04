@@ -17,9 +17,14 @@ if TYPE_CHECKING:
 class LowAltitudeRewardFn(BaseRewardFn):
     """高度过低惩罚"""
 
-    def __init__(self, min_altitude_m: float, weight: float = 1, version=2) -> None:
+    def __init__(
+        self, min_altitude_m: float, max_altitude_m: float, weight: float = 1, version=2
+    ) -> None:
         super().__init__()
         self.min_altitude_m = min_altitude_m
+        self.max_altitude_m = max_altitude_m
+        assert self.min_altitude_m < self.max_altitude_m
+        self._hspaninv = 1 / (self.max_altitude_m - self.min_altitude_m)
         self.weight = weight
         self.version = version
 
@@ -28,11 +33,15 @@ class LowAltitudeRewardFn(BaseRewardFn):
 
     def forward(self, env: "NavigationEnv", plane, **kwargs) -> torch.Tensor:
         h = plane.altitude_m()
-        if self.version == 1:
+        h_hat = (h - self.min_altitude_m) * self._hspaninv
+        if self.version == 1:  # 事件型
             yes = h < self.min_altitude_m
             rew = -yes
-        elif self.version == 2:  # 对应约束 h_min-h<=0
-            rew = h - self.min_altitude_m
+        elif self.version == 2:  # 线性约束 h_min-h<=0 (不适用于双边约束)
+            rew = h_hat
+        elif self.version == 3:  # 障碍函数
+            eps = 1e-2
+            rew = 1 / (-eps - h_hat)
         else:
             raise NotImplementedError(self)
         return rew
