@@ -26,8 +26,8 @@ def main():
     env_max_steps = 500
     # env_out_mode = "pytorch" if env_out_torch else "numpy"
     env_device = [
-        torch.device("cuda" if torch.cuda.is_available() else "cpu"),
         torch.device("cpu"),
+        torch.device("cuda" if torch.cuda.is_available() else "cpu"),
     ][-1]
     th_float = torch.float32
     algoname = "ppo"
