@@ -47,7 +47,7 @@ class PointMassMissile(BaseMissile):
             (self.batchsize, 1), device=device, dtype=dtype
         )  # 航迹倾斜角
         self._Qgk = quat_mul(Qz(chi), Qy(gamma))
-        self._ppgt_vb2ve()
+        self._ppgt_Vb2Ve()
 
     def set_q_gk(
         self,
@@ -55,13 +55,13 @@ class PointMassMissile(BaseMissile):
         chi: torch.Tensor,  # (...,1)
         env_indices: Sequence[int] | torch.Tensor | None = None,
     ):
-        env_indices = self.proc_indices(env_indices)
+        env_indices = self.proc_batch_index(env_indices)
         device = self.device
         dtype = self.dtype
 
         gamma = gamma.to(device=device, dtype=dtype)
         chi = chi.to(device=device, dtype=dtype)
-        self.Q_ea[env_indices] = quat_mul(Qz(chi), Qy(gamma))
+        self.Q_ew[env_indices] = quat_mul(Qz(chi), Qy(gamma))
 
     @property
     def m(self) -> torch.Tensor:
@@ -71,31 +71,19 @@ class PointMassMissile(BaseMissile):
             * self._dm
         )
 
-    @property
-    def altitude_m(self) -> torch.Tensor:
-        return -1 * self.position_e[..., -1:]
-
-    @property
-    def velocity_k(self) -> torch.Tensor:
-        return self.velocity_b
-
-    @property
-    def velocity_e(self) -> torch.Tensor:
-        return self._vel_e
-
     def reset(self, env_indices: Sequence[int] | torch.Tensor | None = None):
-        env_indices = self.proc_indices(env_indices)
+        env_indices = self.proc_batch_index(env_indices)
         super().reset(env_indices)
 
         self._tas[env_indices] = 600.0
-        self._ppgt_tas2va()
+        self._ppgt_tas2Vw()
 
         # reset simulation variaode_solverbles
         chi = torch.zeros(
             (env_indices.shape[0], 1), device=self.device
         )  # 航迹方位角(Course)
         gamma = torch.zeros((env_indices.shape[0], 1), device=self.device)  # 航迹倾斜角
-        self.Q_ea[env_indices] = quat_mul(Qz(chi), Qy(gamma))
+        self.Q_ew[env_indices] = quat_mul(Qz(chi), Qy(gamma))
 
     def run(self, action: torch.Tensor):
         (
@@ -106,25 +94,24 @@ class PointMassMissile(BaseMissile):
             self.position_e,
             self.velocity_e,
             self.tas,
-            self.Q_ea,
+            self.Q_ew,
             t_s=0.001 * self._sim_step_size_ms,
             action=action,
         )
         #
         self._Qgk.copy_(normalize(q_kg))
-        self._ppgt_vb2ve()
-        self._ppgt_tas2va()
+        self._ppgt_Vb2Ve()
+        self._ppgt_tas2Vw()
 
         super().run()
 
-        self.step_hit()
 
     def launch(self, env_indices):
-        env_indices = self.proc_indices(env_indices)
+        env_indices = self.proc_batch_index(env_indices)
         super().launch(env_indices)
         
         self._tas[env_indices] = 600.0
-        self._ppgt_tas2va()
+        self._ppgt_tas2Vw()
 
     def _run_ode(
         self,

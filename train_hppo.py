@@ -27,8 +27,8 @@ def main():
     train_env = NavigationEnv(
         agent_step_size_ms=50,
         sim_step_size_ms=50,
-        navigation_points_total_num=10,
-        navigation_points_visible_num=1,
+        waypoints_total_num=10,
+        waypoints_visible_num=1,
         position_min_limit=[-5000, -5000, -10000],
         position_max_limit=[5000, 5000, 0],
         render_mode="tacview",

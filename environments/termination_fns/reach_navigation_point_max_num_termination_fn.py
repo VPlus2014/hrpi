@@ -3,15 +3,16 @@ from typing import TYPE_CHECKING
 from .base_termination_fn import BaseTerminationFn
 
 if TYPE_CHECKING:
-    from environments.navigation import NavigationEnv
+    from ..navigation import NavigationEnv
 
 
 class ReachNavigationPointMaxNumTerminationFn(BaseTerminationFn):
     def __init__(self) -> None:
         super().__init__()
 
-    def reset(self, **kwargs) -> None:
+    def reset(self, env: "NavigationEnv", **kwargs) -> None:
         pass
 
-    def __call__(self, env: "NavigationEnv", **kwargs) -> torch.Tensor:
-        return (env.cur_nav_point_index[:, :, 0] >= env.navigation_points_total_num).detach()
+    def forward(self, env: "NavigationEnv", plane, **kwargs) -> torch.Tensor:
+        return env.cur_nav_point_index[:, 0, 0:1] >= env.waypoints_total_num
+        # (B,1)

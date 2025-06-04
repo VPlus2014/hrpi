@@ -9,8 +9,8 @@ class AircraftSurvivalTerminationFn(BaseTerminationFn):
     def __init__(self) -> None:
         super().__init__()
 
-    def reset(self, **kwargs) -> None:
+    def reset(self,env: "EvasionEnv", **kwargs) -> None:
         pass
 
-    def __call__(self, env: "EvasionEnv", **kwargs) -> torch.Tensor:
+    def forward(self, env: "EvasionEnv", **kwargs) -> torch.Tensor:
         return env.missile.is_missed()

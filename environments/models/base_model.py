@@ -1,20 +1,27 @@
 from __future__ import annotations
+import hashlib
+from types import EllipsisType
 from typing import TYPE_CHECKING
 import logging
 import torch
 from abc import ABC, abstractmethod
-from typing import Literal
-from collections.abc import Sequence
+from typing import Literal, Sequence, Union
+
 from ..utils.math import (
+    quat_conj,
     quat_mul,
     quat_rotate,
     quat_rotate_inv,
     rpy2quat_inv,
     rpy2quat,
-    xyz2aer,
+    uvw2alpha_beta,
 )
 
 LOGR = logging.getLogger(__name__)
+
+_SupportedIndexType = Union[
+    Sequence[int], torch.Tensor, int, slice, None, type(Ellipsis)
+]
 
 
 class BaseModel(ABC):
@@ -24,32 +31,39 @@ class BaseModel(ABC):
 
     def __init__(
         self,
+        id: torch.Tensor | int,
         position_e: torch.Tensor,
-        model_name: str,
-        model_color: Literal["Red", "Blue"] | str = "Red",
-        model_type: Literal["Aircraft", "Missile"] | str = "Aircraft",
+        alt0: torch.Tensor | float,
         device=torch.device("cpu"),
         dtype=torch.float32,
         sim_step_size_ms: int = 1,
-        **kwargs,
+        call_sign: str = "",
+        acmi_name: str = "",
+        acmi_color: Literal["Red", "Blue"] | str = "Red",
+        acmi_type: str = "",
     ) -> None:
         """模型基类 BaseModel
 
         Args:
+            id (torch.Tensor | int): Tacview Object ID (整数形式).
             position_e (torch.Tensor): NED地轴系下的初始位置, 单位:m, shape: (n, 3)
-            model_name (str, optional): 模型名称. Defaults to "BaseModel".
-            model_color (Literal["Red", "Blue"] | str, optional): Tacview Color. Defaults to "Red".
-            model_type (Literal["Aircraft", "Missile"], optional): Tacview Type. Defaults to "Aircraft".
+            alt0 (torch.Tensor | float, optional): 坐标原点高度, 单位:m.
+            sim_step_size_ms (int, optional): 仿真步长, 单位:ms. Defaults to 1.
             device (torch.device, optional): 所在torch设备. Defaults to torch.device("cpu").
             dtype (torch.dtype, optional): torch浮点类型. Defaults to torch.float32.
-            sim_step_size_ms (int, optional): 仿真步长, 单位:ms. Defaults to 1.
+            acmi_color (Literal["Red", "Blue"] | str, optional): Tacview Color. Defaults to "Red".
+            call_sign (str, optional): Tacview 呼号. Defaults to "".
+            acmi_name (str, optional): Tacview 模型名(必须数据库中可检索否则无法正常渲染)
+            acmi_type (str, optional): Tacview Object Type(符合ACMI标准). Defaults to "".
         """
 
         super().__init__()
-        self.model_name = model_name
-        self.model_color = model_color
+        self.acmi_color = acmi_color
+        self.acmi_name = acmi_name
+        self.acmi_type = acmi_type
+        self.call_sign = call_sign
+
         self._sim_step_size_ms = sim_step_size_ms
-        self.model_type = model_type
         self._device = device = torch.device(device)
         self._dtype = dtype
 
@@ -60,37 +74,45 @@ class BaseModel(ABC):
         # simulation variables
         # initial conditions
         assert len(position_e.shape) == 2 and position_e.shape[-1] == 3
-        self._ic_pos_e = position_e.to(
-            device=device, dtype=dtype
-        )  # model initial position in NED local frame, unit: m, shape: (B, 3)
-        batchsize = self.batchsize
+        self._ic_pos_e = position_e.to(device=device, dtype=dtype).clone()
+        """model initial position in NED local frame, unit: m, shape: (B, 3)"""
+        _shape = [self.batchsize]
+        _0f1 = torch.zeros(_shape + [1], device=device, dtype=dtype)
+
+        self.id = torch.empty(_shape + [1], device=device, dtype=torch.int64)
+        """Tacview Object ID, shape: (B,1)"""
+        self.id.copy_(torch.asarray(id, device=device, dtype=torch.int64))
 
         # cache variables
-        self._pos_e = torch.empty(
-            (batchsize, 3), device=device, dtype=dtype
-        )  # position in NED local frame, unit: m, shape: (B, 3)
-        self._vel_e = torch.empty(
-            (batchsize, 3), device=device, dtype=dtype
-        )  # velocity in NED local frame, unit: m/s, shape: (B, 3)
+        self._pos_e = torch.empty(_shape + [3], device=device, dtype=dtype)
+        """position in NED local frame, unit: m, shape: (B, 3)"""
+        self._vel_e = torch.empty(_shape + [3], device=device, dtype=dtype)
+        """velocity in NED local frame, unit: m/s, shape: (B, 3)"""
+        self._alt0 = _0f1 + alt0
+        """altitude, unit: m, shape: (B, 1)"""
 
         self._g_e = self._g * torch.cat(
             [
-                torch.zeros((batchsize, 2), device=device, dtype=dtype),
-                torch.ones((batchsize, 1), device=device, dtype=dtype),
+                torch.zeros((*_shape, 2), device=device, dtype=dtype),
+                torch.ones(_shape + [1], device=device, dtype=dtype),
             ],
             dim=-1,
-        )  # NED 重力加速度向量
+        )
+        """重力加速度NED地轴系坐标"""
 
-        self.status = BaseModel.STATUS_INACTIVATE * torch.ones(
-            size=(self.batchsize, 1), dtype=torch.int64, device=device
+        self.status = BaseModel.STATUS_INACTIVATE + torch.zeros(
+            size=_shape + [1], dtype=torch.int64, device=device
         )  # shape: (B,1)
         self._sim_time_ms = torch.zeros(
-            (self.batchsize, 1), dtype=torch.int64, device=device
+            _shape + [1], dtype=torch.int64, device=device
         )  # (B,1)
-        if len(kwargs):
-            LOGR.info(
-                f"{self.__class__.__name__}.__init__() received {len(kwargs)} unkown keyword arguments, which are ignored."
-            )
+        # if len(kwargs):
+        #     msg = (
+        #         self.__class__.__name__,
+        #         f"received {len(kwargs)} unkown keyword arguments",
+        #         list(kwargs.keys()),
+        #     )
+        #     LOGR.warning(msg)
 
     @property
     def batchsize(self) -> int:
@@ -107,44 +129,38 @@ class BaseModel(ABC):
         """torch dtype"""
         return self._dtype
 
-    def proc_indices(
-        self, indices: Sequence[int] | torch.Tensor | None = None, check=False
-    ):
-        """对索引做预处理"""
-        if indices is None:
-            indices = torch.arange(self.batchsize, device=self.device)
-        elif isinstance(indices, torch.Tensor):
-            pass
+    def proc_batch_index(self, batch_index: _SupportedIndexType = None):
+        """对批索引做预处理"""
+        if batch_index is None or batch_index is Ellipsis:
+            idxs = Ellipsis
+        elif isinstance(batch_index, (slice, torch.Tensor)):
+            idxs = batch_index
         else:
-            indices = torch.asarray(indices, device=self.device, dtype=torch.int64)
-        # assert isinstance(env_indices, torch.Tensor)
-        if check:
-            imax = indices.max().item()
-            assert (
-                imax < self.batchsize
-            ), f"env_indices {indices} out of range [0, {self.batchsize})"
-        return indices
+            idxs = torch.asarray(batch_index, device=self.device, dtype=torch.int64)
+        # 不做检查
+        return idxs
 
-    @property
-    def position_e(self) -> torch.Tensor:
-        """
-        position in NED local frame, unit: m, shape: (n, 3)
-        """
-        return self._pos_e
+    def position_e(self, batch_index: _SupportedIndexType = None) -> torch.Tensor:
+        """position in NED local frame, unit: m, shape: (B, 3)"""
+        batch_index = self.proc_batch_index(batch_index)
+        return self._pos_e[batch_index, :]
 
-    @property
-    def altitude_m(self) -> torch.Tensor:
-        """海拔高度, unit: m"""
-        return -1 * self.position_e[..., -1:]
+    def velocity_e(self, batch_index: _SupportedIndexType = None) -> torch.Tensor:
+        """velocity in NED local frame, unit: m/s, shape: (B, 3)"""
+        return self._vel_e[batch_index, :]
 
-    @property
-    @abstractmethod
-    def velocity_e(
-        self, env_indices: Sequence[int] | torch.Tensor | None = None
-    ) -> torch.Tensor:
-        """
-        velocity in NED local frame, unit: m/s"""
-        return self._vel_e
+    def altitude_m(self, batch_index: _SupportedIndexType = None) -> torch.Tensor:
+        """altitude, unit: m, shape: (B, 1)"""
+        batch_index = self.proc_batch_index(batch_index)
+        return self._alt0[batch_index, :] - self._pos_e[batch_index, 2:3]
+
+    def longitude_deg(self, batch_index: _SupportedIndexType = None) -> torch.Tensor:
+        """longitude, unit: rad, shape: (B, 1)"""
+        raise NotImplementedError
+
+    def latitude_deg(self, batch_index: _SupportedIndexType = None) -> torch.Tensor:
+        """latitude, unit: rad, shape: (B, 1)"""
+        raise NotImplementedError
 
     @property
     def g_e(self) -> torch.Tensor:
@@ -153,19 +169,19 @@ class BaseModel(ABC):
 
     @property
     def sim_time_ms(self) -> torch.Tensor:
-        """model simulation time, unit: ms, shape: (..., 1)"""
+        """model simulation time, unit: ms, shape: (B, 1)"""
         return self._sim_time_ms
 
     @property
     def sim_time_s(
         self, env_indices: Sequence[int] | torch.Tensor | None = None
     ) -> torch.Tensor:
-        """model simulation time, unit: s, shape: (..., 1)"""
+        """model simulation time, unit: s, shape: (B, 1)"""
         return self.sim_time_ms * 1e-3
 
-    def reset(self, env_indices: Sequence[int] | torch.Tensor | None = None):
+    def reset(self, env_indices: _SupportedIndexType = None):
         """重置 位置, 仿真时间, 仿真生命状态"""
-        env_indices = self.proc_indices(env_indices)
+        env_indices = self.proc_batch_index(env_indices)
 
         self.status[env_indices] = BaseModel.STATUS_INACTIVATE
         self._sim_time_ms[env_indices] = 0.0
@@ -175,11 +191,9 @@ class BaseModel(ABC):
     def run(self):
         self._sim_time_ms += self._sim_step_size_ms
 
-    def is_alive(
-        self, env_indices: Sequence[int] | torch.Tensor | None = None
-    ) -> torch.Tensor:
+    def is_alive(self, env_indices: _SupportedIndexType = None) -> torch.Tensor:
         """判断是否存活"""
-        env_indices = self.proc_indices(env_indices)
+        env_indices = self.proc_batch_index(env_indices)
         return self.status[env_indices] == self.__class__.STATUS_ALIVE
 
     @property
@@ -194,243 +208,306 @@ class BaseModel(ABC):
 
 
 class BaseFV(BaseModel):
+
     def __init__(
         self,
-        model_type="Aircraft",
-        use_body_frame=False,
-        use_wind_frame=True,
+        use_eb=True,
+        use_ew=True,
+        use_wb=True,
         **kwargs,
     ) -> None:
         """飞行器基类 BaseFV
 
         Args:
-            model_type (str, optional): Tacview model type. Defaults to "Aircraft".
-            use_body_frame (bool, optional): 是否启用体轴系状态. Defaults to False.
-            use_wind_frame (bool, optional): 是否启用风轴系/速度系状态. Defaults to True.
+            use_eb (bool, optional): 是否启用地轴-体轴系状态. Defaults to True.
+            use_ew (bool, optional): 是否启用地轴-风轴系状态. Defaults to True.
+            use_wb (bool, optional): 是否启用风轴-体轴系状态. Defaults to True.
             **kwargs: 其他参数, 参见 BaseModel.__init__
         """
-        super().__init__(model_type=model_type, **kwargs)
+        super().__init__(**kwargs)
         device = self.device
         dtype = self.dtype
-        nenvs = self.batchsize
+        _shape = [self.batchsize]
 
         #
         self.health_point = (
-            torch.zeros((self.batchsize, 1), device=device, dtype=dtype) + 100.0
+            torch.zeros(_shape + [1], device=device, dtype=dtype) + 100.0
         )  # health point, shape: (B,1)
         #
         # simulation variables
         # 本体飞控状态
         self._tas = torch.zeros(
-            (nenvs, 1), device=device, dtype=dtype
+            _shape + [1], device=device, dtype=dtype
         )  # true air speed 真空速, unit: m/s, shape: (B,1)
-        if use_body_frame:
+        if use_eb:
             self._vel_b = torch.zeros(
-                (nenvs, 3), device=device, dtype=dtype
-            )  # 体轴系速度坐标 (U,V,W) shape: (B,3)
+                _shape + [3], device=device, dtype=dtype
+            )  # 惯性速度体轴坐标 (U,V,W) shape: (B,3)
             self._Q_eb = torch.zeros(
-                (nenvs, 4), device=device, dtype=dtype
+                _shape + [4], device=device, dtype=dtype
             )  # 地轴/体轴 四元数 shape: (B,4)
-            self._Q_ba = torch.zeros(
-                (nenvs, 4), device=device, dtype=dtype
-            )  # 体轴/风轴 四元数 shape: (B,4)
             self._rpy_eb = torch.zeros(
-                (nenvs, 3), device=device, dtype=dtype
+                _shape + [3], device=device, dtype=dtype
             )  # 地轴/体轴 欧拉角 (roll, pitch, yaw) shape:(B,3)
-            self._rpy_ba = torch.zeros(
-                (nenvs, 3), device=device, dtype=dtype
-            )  # 体轴/风轴 欧拉角 (0, alpha, beta) shape:(B,3)
-
             self._omega_b = torch.zeros(
-                (nenvs, 3), device=device, dtype=dtype
+                _shape + [3], device=device, dtype=dtype
             )  # 体轴系下的旋转角速度 (P,Q,R) shape: (B,3)
 
-        if use_wind_frame:
-            self._Q_ea = torch.zeros(
-                (nenvs, 4), device=device, dtype=dtype
-            )  # 地轴/风轴 四元数 shape: (B,4)
-            self._rpy_ea = torch.zeros(
-                (nenvs, 3), device=device, dtype=dtype
+        if use_ew:
+            self._rpy_ew = torch.zeros(
+                _shape + [3], device=device, dtype=dtype
             )  # 地轴/风轴 欧拉角 (mu, gamma, chi) shape:(B,3)
-            self._vel_a = torch.zeros(
-                (nenvs, 3), device=device, dtype=dtype
-            )  # 风轴系速度坐标 (Vn,Ve,Vd) shape: (B,3)
+            self._Q_ew = torch.zeros(
+                _shape + [4], device=device, dtype=dtype
+            )  # 地轴/风轴 四元数 shape: (B,4)
+            self._vel_w = torch.zeros(
+                _shape + [3], device=device, dtype=dtype
+            )  # 惯性速度风轴分量 (TAS,0,0) shape: (B,3)
 
-    @property
-    def Q_eb(self) -> torch.Tensor:
+        if use_wb:
+            self._rpy_wb = torch.zeros(
+                _shape + [3], device=device, dtype=dtype
+            )  # 风轴/体轴 欧拉角 (0, alpha, -beta) shape:(B,3)
+            self._Q_wb = torch.zeros(
+                _shape + [4], device=device, dtype=dtype
+            )  # 风轴/体轴 四元数 shape: (B,4)
+
+    def Q_eb(self, batch_index: _SupportedIndexType = None) -> torch.Tensor:
         """地轴系/体轴系四元数"""
-        return self._Q_eb
+        batch_index = self.proc_batch_index(batch_index)
+        return self._Q_eb[batch_index, :]
 
-    @property
-    def Q_ba(self) -> torch.Tensor:
-        """体轴系/风轴系四元数"""
-        return self._Q_ba
+    def Q_wb(self, batch_index: _SupportedIndexType = None) -> torch.Tensor:
+        """风轴系/体轴系四元数"""
+        batch_index = self.proc_batch_index(batch_index)
+        return self._Q_wb[batch_index, :]
 
-    @property
-    def Q_ea(self) -> torch.Tensor:
+    def Q_ew(self, batch_index: _SupportedIndexType = None) -> torch.Tensor:
         """地轴系/风轴系四元数"""
-        return self._Q_ea
+        batch_index = self.proc_batch_index(batch_index)
+        return self._Q_ew[batch_index, :]
 
-    @property
-    def tas(self) -> torch.Tensor:
+    def tas(self, batch_index: _SupportedIndexType = None) -> torch.Tensor:
         """true air speed, unit: m/s, shape: (B, 1)"""
-        return self._tas
+        batch_index = self.proc_batch_index(batch_index)
+        return self._tas[batch_index, :]
 
-    @property
-    def velocity_b(self) -> torch.Tensor:
-        """惯性速度的NED体轴系分量(U,V,W), unit: m/s, shape: (B, 3)"""
-        return self._vel_b
+    def velocity_b(self, batch_index: _SupportedIndexType = None) -> torch.Tensor:
+        """惯性速度 NED体轴系坐标 (U,V,W), unit: m/s, shape: (B, 3)"""
+        batch_index = self.proc_batch_index(batch_index)
+        return self._vel_b[batch_index, :]
 
-    @property
-    def velocity_e(self) -> torch.Tensor:
-        """惯性速度的NED地轴系分量(Vn, Ve, Vd), unit: m/s, shape: (B, 3)"""
-        return self._vel_e
+    def velocity_e(self, batch_index: _SupportedIndexType = None) -> torch.Tensor:
+        """惯性速度 NED地轴系坐标 (V_N, V_E, V_D), unit: m/s, shape: (B, 3)"""
+        batch_index = self.proc_batch_index(batch_index)
+        return self._vel_e[batch_index, :]
 
-    @property
-    def velocity_a(self) -> torch.Tensor:
-        """惯性速度的NED航迹系分量(Vn, Ve, Vd), unit: m/s, shape: (B, 3)"""
-        return self._vel_a
+    def velocity_w(self, batch_index: _SupportedIndexType = None) -> torch.Tensor:
+        """惯性速度 NED风轴系坐标 (TAS,0,0), unit: m/s, shape: (B, 3)"""
+        batch_index = self.proc_batch_index(batch_index)
+        return self._vel_w[batch_index, :]
 
-    def activate(self, env_indices: Sequence[int] | torch.Tensor | None = None):
-        env_indices = self.proc_indices(env_indices)
-        self.status[env_indices] = BaseFV.STATUS_ALIVE
+    def rpy_eb(self, batch_index: _SupportedIndexType = None) -> torch.Tensor:
+        """体轴系 (roll, pitch, yaw) unit: rad, shape: (B, 3)"""
+        batch_index = self.proc_batch_index(batch_index)
+        return self._rpy_eb[batch_index, :]
+
+    def rpy_ew(self, batch_index: _SupportedIndexType = None) -> torch.Tensor:
+        """风轴系 (mu, gamma, chi) unit: rad, shape: (B, 3)"""
+        batch_index = self.proc_batch_index(batch_index)
+        return self._rpy_ew[batch_index, :]
+
+    def activate(self, batch_index: _SupportedIndexType = None):
+        batch_index = self.proc_batch_index(batch_index)
+        self.status[batch_index] = BaseFV.STATUS_ALIVE
 
     # propagation modules
 
-    def _ppgt_rpy_eb2Qeb(self):
+    def _ppgt_rpy_eb2Qeb(self, batch_index: _SupportedIndexType = None):
         """地轴/体轴 欧拉角->四元数"""
-        self._Q_eb.copy_(rpy2quat(self._rpy_eb))
+        batch_index = self.proc_batch_index(batch_index)
+        self._Q_eb[batch_index, :] = rpy2quat(self._rpy_eb[batch_index, :])
 
-    def _ppgt_rpy_ba2Qba(self):
+    def _ppgt_rpy_wb2Qwb(self, batch_index: _SupportedIndexType = None):
         """体轴/风轴 欧拉角->四元数"""
-        self._Q_ba.copy_(rpy2quat(self._rpy_ba))
+        batch_index = self.proc_batch_index(batch_index)
+        self._Q_wb[batch_index, :] = rpy2quat(self._rpy_wb[batch_index, :])
 
-    def _ppgt_Qeb2rpy_eb(self):
+    def _ppgt_rpy_ew2Qew(self, batch_index: _SupportedIndexType = None):
+        """地轴/风轴 欧拉角->四元数"""
+        batch_index = self.proc_batch_index(batch_index)
+        self._Q_ew[batch_index, :] = rpy2quat(self._rpy_ew[batch_index, :])
+
+    def _ppgt_Qeb2rpy_eb(self, batch_index: _SupportedIndexType = None):
         """地轴/体轴 四元数->欧拉角"""
-        self._rpy_eb.copy_(rpy2quat_inv(self._Q_eb, self._rpy_eb[..., 0:1]))
+        batch_index = self.proc_batch_index(batch_index)
+        self._rpy_eb[batch_index, :] = rpy2quat_inv(
+            self._Q_eb[batch_index, :], self._rpy_eb[batch_index, 0:1]
+        )
 
-    def _ppgt_Qba2rpy_ba(self):
-        """体轴/风轴 四元数->欧拉角"""
-        self._rpy_ba.copy_(rpy2quat_inv(self._Q_ba))  # 风轴到体轴不定义滚转(恒为0)
+    def _ppgt_Qwb2rpy_wb(self, batch_index: _SupportedIndexType = None):
+        """风轴/体轴 四元数->欧拉角"""
+        batch_index = self.proc_batch_index(batch_index)
+        self._rpy_wb[batch_index, :] = rpy2quat_inv(
+            self._Q_wb[batch_index, :], self._rpy_wb[batch_index, 0:1]
+        )
+        self._rpy_wb[batch_index, 0:1] = 0  # 风轴到体轴不定义滚转,恒为0
 
-    def _ppgt_Qea2rpy_ea(self):
+    def _ppgt_Qew2rpy_ew(self, batch_index: _SupportedIndexType = None):
         """地轴/风轴 四元数->欧拉角"""
-        self._rpy_ea.copy_(rpy2quat_inv(self._Q_ea, self._rpy_ea[..., 0:1]))
+        batch_index = self.proc_batch_index(batch_index)
+        self._rpy_ew[batch_index, :] = rpy2quat_inv(
+            self._Q_ew[batch_index, :], self._rpy_ew[batch_index, 0:1]
+        )
 
-    def _ppgt_vb2ve(self):
+    def _ppgt_Vb2Ve(self, batch_index: _SupportedIndexType = None):
         """惯性速度 体轴系->地轴系"""
+        batch_index = self.proc_batch_index(batch_index)
         self._vel_e.copy_(quat_rotate(self._Q_eb, self._vel_b))
 
-    def _ppgt_ve2vb(self):
+    def _ppgt_Ve2Vb(self, batch_index: _SupportedIndexType = None):
         """惯性速度 地轴系->体轴系"""
-        self._vel_b.copy_(quat_rotate_inv(self._Q_eb, self._vel_e))
+        batch_index = self.proc_batch_index(batch_index)
+        self._vel_b[batch_index, :] = quat_rotate_inv(
+            self._Q_eb[batch_index, :], self._vel_e[batch_index, :]
+        )
 
-    def _ppgt_ve2va(self):
-        """惯性速度 地轴系->航迹系"""
-        self._vel_a.copy_(quat_rotate_inv(self._Q_ea, self._vel_e))
-
-    def _ppgt_va2ve(self):
-        """惯性速度 航迹系->地轴系"""
-        self._vel_e.copy_(quat_rotate(self._Q_ea, self._vel_a))
-
-    def _ppgt_vb2tas(self):
-        """体轴系惯性速度->真空速tas"""
-        torch.norm(self._vel_b, p=2, dim=-1, keepdim=True, out=self._tas)
-
-    def _ppgt_vb2rpy_ba(self):
-        """体轴系惯性速度-> 体轴/风轴 欧拉角(迎角,侧滑角)"""
-        ypR = xyz2aer(self._vel_b)
-        beta, alpha, _ = ypR.split([1, 1, 1], -1)
-        self.set_beta(beta)
-        self.set_alpha(alpha)
-
-    def _ppgt_vg2tas(self):
+    def _ppgt_Ve2tas(self, batch_index: _SupportedIndexType = None):
         """地轴系惯性速度->真空速tas"""
-        torch.norm(self._vel_e, p=2, dim=-1, keepdim=True, out=self._tas)
+        batch_index = self.proc_batch_index(batch_index)
+        self._tas[batch_index, :] = torch.norm(
+            self._vel_e[batch_index, :], p=2, dim=-1, keepdim=True
+        )
 
-    def _ppgt_Qea(self):
-        """重算 地轴/风轴 四元数"""
-        self._Q_ea.copy_(quat_mul(self._Q_eb, self._Q_ba))
+    def _ppgt_Vb2tas(self, batch_index: _SupportedIndexType = None):
+        """体轴系惯性速度->真空速tas"""
+        batch_index = self.proc_batch_index(batch_index)
+        self._tas[batch_index, :] = torch.norm(
+            self._vel_b[batch_index, :], p=2, dim=-1, keepdim=True
+        )
 
-    def _ppgt_tas2va(self):
-        """将真空速转换为体轴系坐标"""
-        self._vel_a[..., 0:1] = self._tas
-        # self._vel_a[..., 1:3] = 0
+    def _ppgt_Vw2tas(self, batch_index: _SupportedIndexType = None):
+        """风轴系惯性速度->真空速tas"""
+        batch_index = self.proc_batch_index(batch_index)
+        self._tas[batch_index, :] = self._vel_w[batch_index, 0:1]
 
-    def _ppgt_va2tas(self):
-        """速度系惯性速度->真空速"""
-        self._tas.copy_(self._vel_a[..., 0:1])
+    def _ppgt_tas2Vw(self, batch_index: _SupportedIndexType = None):
+        """真空速->风轴系惯性速度"""
+        batch_index = self.proc_batch_index(batch_index)
+        self._vel_w[batch_index, 0:1] = self._tas[batch_index, :]
+        self._vel_w[batch_index, 1:3] = 0
 
-    @property
-    def roll(self):
-        """体轴滚转角, unit: rad, shape: (B, 1)"""
-        return self._rpy_eb[..., 0:1]
+    def _ppgt_Vw2Vb(self, batch_index: _SupportedIndexType = None):
+        """真空速->体轴系惯性速度"""
+        batch_index = self.proc_batch_index(batch_index)
+        self._vel_b[batch_index, :] = quat_rotate_inv(
+            self._Q_wb[batch_index, :], self._vel_w[batch_index, :]
+        )
 
-    @property
-    def pitch(self):
-        """体轴俯仰角, unit: rad, shape: (B, 1)"""
-        return self._rpy_eb[..., 1:2]
+    def _ppgt_Vw2Ve(self, batch_index: _SupportedIndexType = None):
+        """真空速->地轴系惯性速度"""
+        batch_index = self.proc_batch_index(batch_index)
+        self._vel_e[batch_index, :] = quat_rotate(
+            self._Q_ew[batch_index, :], self._vel_w[batch_index, :]
+        )
 
-    @property
-    def yaw(self):
-        """体轴偏航角, unit: rad, shape: (B, 1)"""
-        return self._rpy_eb[..., 2:3]
+    def _ppgt_Vb2rpy_wb(self, batch_index: _SupportedIndexType = None):
+        """体轴系惯性速度-> 体轴/风轴 欧拉角(迎角,侧滑角)"""
+        batch_index = self.proc_batch_index(batch_index)
+        alpha, beta = uvw2alpha_beta(self._vel_b[batch_index, :])
+        self.set_alpha(alpha, batch_index)
+        self.set_beta(beta, batch_index)
 
-    @property
-    def alpha(self):
-        """迎角, unit: rad, shape: (B, 1)"""
-        return self._rpy_ba[..., 1:2]
+    def _ppgt_QebQwb2Qew(self, batch_index: _SupportedIndexType = None):
+        """地轴/体轴 & 风轴/体轴 -> 地轴/风轴 四元数"""
+        batch_index = self.proc_batch_index(batch_index)
+        self._Q_ew[batch_index, :] = quat_mul(
+            self._Q_eb[batch_index, :], quat_conj(self._Q_wb[batch_index, :])
+        )
 
-    @property
-    def beta(self):
-        """侧滑角, unit: rad, shape: (B, 1)"""
-        return self._rpy_ba[..., 2:3]
+    def _ppgt_QewQwb_to_Qeb(self, batch_index: _SupportedIndexType = None):
+        """地轴/风轴 & 风轴/体轴 -> 地轴/体轴 四元数"""
+        batch_index = self.proc_batch_index(batch_index)
+        self._Q_eb[batch_index, :] = quat_mul(
+            self._Q_ew[batch_index, :], self._Q_wb[batch_index, :]
+        )
 
-    @property
-    def mu(self):
-        """速度系滚转角, unit: rad, shape: (B, 1)"""
-        return self._rpy_ea[..., 0:1]
+    def roll(self, batch_index: _SupportedIndexType = None):
+        """体轴滚转角 in (-pi,pi], unit: rad, shape: (B, 1)"""
+        batch_index = self.proc_batch_index(batch_index)
+        return self._rpy_eb[batch_index, 0:1]
 
-    @property
-    def gamma(self):
-        """速度系俯仰角, unit: rad, shape: (B, 1)"""
-        return self._rpy_ea[..., 1:2]
+    def pitch(self, batch_index: _SupportedIndexType = None):
+        """体轴俯仰角 in [-pi/2,pi/2], unit: rad, shape: (B, 1)"""
+        batch_index = self.proc_batch_index(batch_index)
+        return self._rpy_eb[batch_index, 1:2]
 
-    @property
-    def chi(self):
-        """速度系偏航角, unit: rad, shape: (B, 1)"""
-        return self._rpy_ea[..., 2:3]
+    def yaw(self, batch_index: _SupportedIndexType = None):
+        """体轴偏航角 in (-pi,pi], unit: rad, shape: (B, 1)"""
+        batch_index = self.proc_batch_index(batch_index)
+        return self._rpy_eb[batch_index, 2:3]
 
-    def set_roll(self, roll: torch.Tensor, dst_index=None):
-        dst_index = self.proc_indices(dst_index)
-        self._rpy_eb[dst_index, 0:1] = roll
+    def alpha(self, batch_index: _SupportedIndexType = None):
+        """迎角 in [-pi/2,pi/2], unit: rad, shape: (B, 1)"""
+        batch_index = self.proc_batch_index(batch_index)
+        return self._rpy_wb[batch_index, 1:2]
 
-    def set_pitch(self, pitch: torch.Tensor, dst_index=None):
-        dst_index = self.proc_indices(dst_index)
-        self._rpy_eb[dst_index, 1:2] = pitch
+    def beta(self, batch_index: _SupportedIndexType = None):
+        """侧滑角 in [-pi,pi], unit: rad, shape: (B, 1)"""
+        batch_index = self.proc_batch_index(batch_index)
+        return -(self._rpy_wb[batch_index, 2:3])
 
-    def set_yaw(self, yaw: torch.Tensor, dst_index=None):
-        dst_index = self.proc_indices(dst_index)
-        self._rpy_eb[dst_index, 2:3] = yaw
+    def mu(self, batch_index: _SupportedIndexType = None):
+        """速度系滚转角 in (-pi,pi], unit: rad, shape: (B, 1)"""
+        batch_index = self.proc_batch_index(batch_index)
+        return self._rpy_ew[batch_index, 0:1]
 
-    def set_alpha(self, alpha: torch.Tensor, dst_index=None):
+    def gamma(self, batch_index: _SupportedIndexType = None):
+        """速度系俯仰角 in [-pi/2,pi/2], unit: rad, shape: (B, 1)"""
+        batch_index = self.proc_batch_index(batch_index)
+        return self._rpy_ew[batch_index, 1:2]
 
-        dst_index = self.proc_indices(dst_index)
-        self._rpy_ba[dst_index, 1:2] = alpha
+    def chi(self, batch_index: _SupportedIndexType = None):
+        """速度系偏航角 in (-pi,pi], shape: (B, 1)"""
+        batch_index = self.proc_batch_index(batch_index)
+        return self._rpy_ew[batch_index, 2:3]
 
-    def set_beta(self, beta: torch.Tensor, dst_index=None):
-        dst_index = self.proc_indices(dst_index)
-        self._rpy_ba[dst_index, 2:3] = beta
+    def set_roll(self, value: torch.Tensor, dst_index: _SupportedIndexType = None):
+        """赋值 体轴滚转角(无级联操作) 等价于 roll[dst_index,:]=value"""
+        dst_index = self.proc_batch_index(dst_index)
+        self._rpy_eb[dst_index, 0:1] = value
 
-    def set_mu(self, mu: torch.Tensor, dst_index=None):
+    def set_pitch(self, value: torch.Tensor, dst_index: _SupportedIndexType = None):
+        """赋值 体轴俯仰角(无级联操作)  等价于 pitch[dst_index,:]=value"""
+        dst_index = self.proc_batch_index(dst_index)
+        self._rpy_eb[dst_index, 1:2] = value
 
-        dst_index = self.proc_indices(dst_index)
-        self._rpy_ea[dst_index, 0:1] = mu
+    def set_yaw(self, value: torch.Tensor, dst_index: _SupportedIndexType = None):
+        """赋值 体轴偏航角(无级联操作) 等价于 yaw[dst_index,:]=value"""
+        dst_index = self.proc_batch_index(dst_index)
+        self._rpy_eb[dst_index, 2:3] = value
 
-    def set_gamma(self, gamma: torch.Tensor, dst_index=None):
-        dst_index = self.proc_indices(dst_index)
-        self._rpy_ea[dst_index, 1:2] = gamma
+    def set_alpha(self, value: torch.Tensor, dst_index: _SupportedIndexType = None):
+        """赋值 迎角(无级联操作) 等价于 alpha[dst_index,:]=value"""
+        dst_index = self.proc_batch_index(dst_index)
+        self._rpy_wb[dst_index, 1:2] = value
 
-    def set_chi(self, chi: torch.Tensor, dst_index=None):
-        dst_index = self.proc_indices(dst_index)
-        self._rpy_ea[dst_index, 2:3] = chi
+    def set_beta(self, value: torch.Tensor, dst_index: _SupportedIndexType = None):
+        """赋值 侧滑角(无级联操作) 等价于 beta[dst_index,:]=value"""
+        dst_index = self.proc_batch_index(dst_index)
+        self._rpy_wb[dst_index, 2:3] = -value
+
+    def set_mu(self, value: torch.Tensor, dst_index: _SupportedIndexType = None):
+        """赋值 航迹滚转角(无级联操作) 等价于 mu[dst_index,:]=value"""
+        dst_index = self.proc_batch_index(dst_index)
+        self._rpy_ew[dst_index, 0:1] = value
+
+    def set_gamma(self, value: torch.Tensor, dst_index: _SupportedIndexType = None):
+        """赋值 航迹俯仰角(无级联操作) 等价于 gamma[dst_index,:]=value"""
+        dst_index = self.proc_batch_index(dst_index)
+        self._rpy_ew[dst_index, 1:2] = value
+
+    def set_chi(self, value: torch.Tensor, dst_index: _SupportedIndexType = None):
+        """赋值 航迹偏航角(无级联操作) 等价于 chi[dst_index,:]=value"""
+        dst_index = self.proc_batch_index(dst_index)
+        self._rpy_ew[dst_index, 2:3] = value

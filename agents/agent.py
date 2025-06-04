@@ -49,51 +49,49 @@ class Agent(nn.Module):
             self.dtype = dtype
         return super().to(device=self.device, dtype=self.dtype)
 
-    @cached_property
-    def observation_low(self) -> torch.Tensor:
-        return torch.tensor(
-            self.observation_space.low, dtype=self.dtype, device=self.device
-        )
+    @property
+    def observation_min(self) -> torch.Tensor:
+        raise NotImplementedError
 
-    @cached_property
-    def observation_high(self) -> torch.Tensor:
-        return torch.tensor(
-            self.observation_space.high, dtype=self.dtype, device=self.device
-        )
+    @property
+    def observation_max(self) -> torch.Tensor:
+        raise NotImplementedError
+    
+    @property
+    def action_min(self) -> torch.Tensor:
+        raise NotImplementedError
+
+    @property
+    def action_max(self) -> torch.Tensor:
+        raise NotImplementedError
+
+
 
     @abstractmethod
-    def evaluate(self, state: np.ndarray | torch.Tensor) -> torch.Tensor: ...
+    def evaluate(self, state: np.ndarray | torch.Tensor) -> torch.Tensor:
+        """根据状态产生贪心动作
+
+        Args:
+            state (np.ndarray | torch.Tensor): 环境原始状态
+
+        Returns:
+            torch.Tensor: 环境动作
+        """
+        pass
 
     @abstractmethod
     def choose_action(
         self,
         state: np.ndarray | torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor]: ...
-    """
-    根据状态产生动作，并计算对数似然
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """根据状态产生随机动作，并计算对数似然
 
-    Args:
-        state (np.ndarray | torch.Tensor): 状态
+            state (np.ndarray | torch.Tensor): 环境状态
 
-    Returns:
-        tuple[torch.Tensor, torch.Tensor]: 动作值, 动作对数似然
-    """
-
-    def _forward(
-        self,
-        state_normalized: torch.Tensor,
-        action: torch.Tensor | None = None,
-    ) -> tuple[torch.Tensor, torch.Tensor]: ...
-
-    """
-    根据状态采样动作(action not None 则跳过), 评估动作对数似然
-    Args:
-        state_normalized (np.ndarray | torch.Tensor): 归一化状态
-        action (np.ndarray | torch.Tensor | None, optional): 动作. Defaults to None.
-
-    Returns:
-        tuple[torch.Tensor, torch.Tensor]: 动作值, 动作对数似然
-    """
+        Returns:
+            tuple[torch.Tensor, torch.Tensor]: 环境动作值, 动作对数似然
+        """
+        pass
 
     @abstractmethod
     def update(self, global_step: int) -> dict[str, float]: ...

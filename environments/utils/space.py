@@ -5,6 +5,8 @@ from gymnasium import spaces
 from collections import OrderedDict
 from typing import Any, Sequence, TypeVar
 
+_T_NDArr = TypeVar("_T_NDArr", np.ndarray, torch.Tensor)
+
 
 def get_spaces_shape(space: spaces.Space) -> int:
     if isinstance(space, spaces.Discrete):
@@ -86,7 +88,7 @@ def flatten(
     return value_flattened
 
 
-def unflatten(space: spaces.Space, data: torch.Tensor):
+def unflatten(space: spaces.Space, data: _T_NDArr):
     if isinstance(space, spaces.Discrete):
         return data[..., 0:1], data[..., 1:]
 
@@ -107,16 +109,13 @@ def unflatten(space: spaces.Space, data: torch.Tensor):
             data_unflattened[key], data = unflatten(_space, data)
 
         return data_unflattened, data
-
     else:
         raise NotImplementedError("type(space) {} is unsupported".format(type(space)))
 
 
-_T_NDArr = TypeVar("_T_NDArr", np.ndarray, torch.Tensor)
-
-
 def normalize(data: _T_NDArr, low: _T_NDArr, high: _T_NDArr) -> _T_NDArr:
-    """[low, high]->[-1, 1]
+    """
+    线性归一化 [low, high]->[0, 1]
     Args:
         data (np.ndarray | torch.Tensor): _description_
         low (np.ndarray | torch.Tensor): 端点1
@@ -124,5 +123,21 @@ def normalize(data: _T_NDArr, low: _T_NDArr, high: _T_NDArr) -> _T_NDArr:
     Returns:
         (np.ndarray | torch.Tensor): 归一化数据
     """
-    data = 2 * (data - low) / (high - low) - 1
+    data = (data - low) / (high - low)
     return data
+
+
+def affcmb(weight: _T_NDArr, low: _T_NDArr, high: _T_NDArr) -> _T_NDArr:
+    """
+    仿射组合(线性归一化的逆映射)
+    $$
+    low + w * (high - low)
+    $$
+    Args:
+        weight (np.ndarray | torch.Tensor): 权重
+        low (np.ndarray | torch.Tensor): 端点1
+        high (np.ndarray | torch.Tensor): 端点2
+    Returns:
+        (np.ndarray | torch.Tensor): 仿射组合数据
+    """
+    return low + weight * (high - low)

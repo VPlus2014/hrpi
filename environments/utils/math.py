@@ -716,6 +716,42 @@ aer2ned = aer2xyz
 
 
 @torch.jit.script
+def _uvw2alpha_beta(uvw: torch.Tensor):
+    uvw = normalize(uvw)
+    u, v, w = torch.split(uvw, [1, 1, 1], -1)  # (...,1)
+    alpha = torch.atan2(w, u)
+    beta = torch.asin(v)
+    return alpha, beta
+
+
+def uvw2alpha_beta(uvw: torch.Tensor):
+    r"""
+    NED 体轴速度分量 (U,V,W)->(\alpha,\beta)\
+    坐标系 旋转关系\
+    $$
+    \Phi_v R_z(-\beta) R_y(\alpha) = \Phi_b
+    $$
+
+    (U,V,W) 单位向量的分解
+
+    $$
+    i_{v/b} = ( \cos\beta \cos\alpha, 
+                \sin\beta, 
+                \cos\beta \sin\alpha)
+    $$
+
+    Args:
+        uvw (torch.Tensor): 体轴速度分量 shape: (...,3)
+
+    Returns:
+        alpha (torch.Tensor): 迎角 \in [-pi/2,pi/2] shape: (...,1)
+        beta (torch.Tensor): 侧滑角 \in (-pi,pi] shape: (...,1)
+    """
+    # assert (norm(uvw)>0).all()
+    return _uvw2alpha_beta(uvw)
+
+
+@torch.jit.script
 def _vec_cosine(v1: torch.Tensor, v2: torch.Tensor, n1: torch.Tensor, n2: torch.Tensor):
     eps = 1e-6
     v1_is_zero = n1 < eps
@@ -979,7 +1015,9 @@ def delta_reg(a: torch.Tensor, b: torch.Tensor, r: torch.Tensor | float = _PI):
     r"""
     计算 a-b 在 R=(-r,r] 上的最小幅度值
 
-    即 $\argmin_{ d\in R=(-r,r]: d=a-b (mod |R|)} |d|$
+    $$
+    \argmin_{ d\in R=(-r,r]: d=a-b (mod |R|) } |d|
+    $$
     """
     # assert torch.all(r > 0), "r must be positive."
     diam = r + r
@@ -989,12 +1027,18 @@ def delta_reg(a: torch.Tensor, b: torch.Tensor, r: torch.Tensor | float = _PI):
 
 
 def delta_deg_reg(a: torch.Tensor, b: torch.Tensor):
-    r"""$\argmin_{ d\in R=(-180,180]: d=a-b (mod |R|)} |d|$"""
+    r"""
+    $$
+    \argmin_{ d\in R=(-180,180]: d=a-b (mod |R|) } |d|
+    $$"""
     return delta_reg(a, b, 180)
 
 
 def delta_rad_reg(a: torch.Tensor, b: torch.Tensor):
-    r"""$$\argmin_{ d\in R=(-pi,pi]: d=a-b (mod |R|)} |d|$"""
+    r"""
+    $$
+    \argmin_{ d\in R=(-pi,pi]: d=a-b (mod |R|) } |d|
+    $$"""
     return delta_reg(a, b, _PI)
 
 

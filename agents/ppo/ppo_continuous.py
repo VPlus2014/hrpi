@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypeVar
 import torch
 import torch.nn.functional as F
 import numpy as np
@@ -11,17 +11,18 @@ from torch.utils.data.sampler import BatchSampler, SubsetRandomSampler
 as_tsr = torch.asarray
 
 if TYPE_CHECKING:
-    from torch.utils.tensorboard import SummaryWriter
+    from torch.utils.tensorboard.writer import SummaryWriter
 
 from agents.modules import GaussianActor, Critic
 from agents.agent import Agent
 from replay_buffer.replaybuffer import ReplayBuffer
 from replay_buffer.protocol import RolloutBatchProtocol
 
-from environments.utils.space import normalize
+from environments.utils.space import normalize, affcmb
 
 
 class PPOContinuous(Agent):
+
     def __init__(
         self,
         name: str,
@@ -42,6 +43,7 @@ class PPOContinuous(Agent):
         repeat: int,
         adam_eps: float = 1e-8,
         num_envs: int = 1,
+        env_out_torch=True,
         writer: SummaryWriter | None = None,
         device: torch.device = torch.device("cpu"),
         dtype: torch.dtype = torch.float,
@@ -57,8 +59,7 @@ class PPOContinuous(Agent):
             dtype=dtype,
         )
         self.mini_batch_size = mini_batch_size
-        self.action_min = torch.from_numpy(action_space.low).to(device=self.device)
-        self.action_max = torch.from_numpy(action_space.high).to(device=self.device)
+
         self.lr_a = lr_a  # Learning rate of actor
         self.lr_c = lr_c  # Learning rate of critic
         self.gamma = gamma  # Discount factor
@@ -69,6 +70,36 @@ class PPOContinuous(Agent):
         self.adam_eps = adam_eps
         self.use_grad_clip = use_grad_clip
         self.use_adv_norm = use_adv_norm
+        self.env_is_torch = env_out_torch
+
+        # 缓存属性
+        actmin = torch.from_numpy(action_space.low).to(
+            device=self.device, dtype=self.dtype
+        )
+        actmax = torch.from_numpy(action_space.high).to(
+            device=self.device, dtype=self.dtype
+        )
+        actspan = actmax - actmin
+        self.register_buffer("_buf_act_min", actmin)
+        self.register_buffer("_buf_act_max", actmax)
+        self.register_buffer("_buf_act_span", actspan)
+        self._buf_act_min = self.get_buffer("_buf_act_min")
+        self._buf_act_max = self.get_buffer("_buf_act_max")
+        self._buf_act_span = self.get_buffer("_buf_act_span")
+
+        obsmin = torch.from_numpy(observation_space.low).to(
+            device=self.device, dtype=self.dtype
+        )
+        obsmax = torch.from_numpy(observation_space.high).to(
+            device=self.device, dtype=self.dtype
+        )
+        obsspan = obsmax - obsmin
+        self.register_buffer("_buf_obs_min", obsmin)
+        self.register_buffer("_buf_obs_max", obsmax)
+        self.register_buffer("_buf_obs_span", obsspan)
+        self._buf_obs_min = self.get_buffer("_buf_obs_min")
+        self._buf_obs_max = self.get_buffer("_buf_obs_max")
+        self._buf_obs_span = self.get_buffer("_buf_obs_span")
 
         self.actor = GaussianActor(
             state_dim=observation_space.shape[0],
@@ -93,107 +124,194 @@ class PPOContinuous(Agent):
             action_dim=action_space.shape[0],
             size=self.batch_size,
             num_envs=self.num_envs,
-            ignore_obs_next=True,
+            compact=True,
             device=self.device,
             float_dtype=self.dtype,
         )
-        self.returns = torch.zeros(size=(self.num_envs, 1), device=self.device)
 
+        self.returns = torch.zeros(
+            size=(self.num_envs, 1), device=self.device, dtype=self.dtype
+        )
+
+    def to(self, device: torch.device | None = None, dtype: torch.dtype | None = None):
+        raise NotImplementedError("当前模块不支持迁移设备")
+
+    @property
+    def action_min(self) -> torch.Tensor:
+        return self._buf_act_min
+
+    @property
+    def action_max(self) -> torch.Tensor:
+        return self._buf_act_max
+
+    @property
+    def observation_min(self) -> torch.Tensor:
+        return self._buf_obs_min
+
+    @property
+    def observation_max(self) -> torch.Tensor:
+        return self._buf_obs_max
+
+    @torch.no_grad()
     def evaluate(self, state: np.ndarray | torch.Tensor) -> torch.Tensor:
-        state = torch.asarray(state, dtype=self.dtype, device=self.device)  # (dimX)
-        state = state.unsqueeze(dim=0)  # (1, dimX)
-
-        action: torch.Tensor = self.actor(state)
-        action = action.squeeze(dim=0)
-
+        state = as_tsr(state, device=self.device, dtype=self.dtype)  # (...,dimX)
+        rst = self._integ_infer(
+            state,
+            greedy=True,
+            with_log_prob=False,
+            with_entropy=False,
+            store_state=False,
+        )
+        action = rst[0]
         return action
-
-    def _forward(
-        self,
-        state: torch.Tensor,
-        act: torch.Tensor | None = None,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        dist = self.actor.get_dist(state)
-        if act is None:
-            act = dist.sample()
-            act = torch.clamp(act, self.action_min, self.action_max)  # [-max,max]
-        act_log_prob: torch.Tensor = dist.log_prob(
-            act
-        )  # The log probability density of the action
-        return act, act_log_prob
 
     @torch.no_grad()
     def choose_action(
         self,
         state: np.ndarray | torch.Tensor,
-        action: np.ndarray | torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        self.state = as_tsr(state, dtype=self.dtype, device=self.device)  # (...,dimX)
-        # 归一化
-        state_norm = normalize(self.state, self.observation_low, self.observation_high)
+        state = as_tsr(state, device=self.device, dtype=self.dtype)  # (...,dimX)
+        rst = self._integ_infer(
+            state,
+            greedy=False,
+            with_log_prob=True,
+            with_entropy=False,
+            store_state=True,
+        )
+        action = rst[0]
+        logpa = cast(torch.Tensor, rst[1])
+        return action, logpa
 
-        act, act_log_prob = self._forward(state_norm)
+    def _integ_infer(
+        self,
+        state: torch.Tensor,
+        action: torch.Tensor | None = None,
+        greedy: bool = False,
+        with_log_prob: bool = False,
+        with_entropy: bool = False,
+        store_state: bool = True,
+        joint: bool = False,
+    ):
+        """
+        正向计算
 
-        return act, act_log_prob
+        Args:
+            state (torch.Tensor): 环境状态 (...,dimX)
+            action (torch.Tensor | None, optional): 参考环境动作 (...,dimA). Defaults to None.
+            greedy (bool, optional): (action=None时有效)需要重新选择动作时的策略 1->依分布随机, 0->依分布贪心. Defaults to False.
+            with_log_prob (bool, optional): _description_. Defaults to True.
+            with_entropy (bool, optional): _description_. Defaults to True.
+            joint (bool, optional): 是否视为联合分布,若是则对数似然和熵都求和. Defaults to False.
+
+        Returns:
+            action (torch.Tensor): 环境动作 (...,dimA)
+            log_prob (torch.Tensor|None): 动作对数似然 (...,1)
+            entropy (torch.Tensor|None): 动作分布联合熵 (...,1)
+        """
+        if store_state:
+            self.state = state  # 存储当前环境状态
+
+        # 状态归一化
+        x = (state - self.observation_min) / self._buf_obs_span  # (...,dimX)
+        _shphd = x.shape[:-1]
+        x = x.reshape(-1, x.shape[-1])  # (N, dimX)
+
+        pi_ = self.actor.get_dist(x)
+        if action is None:  # 需要重新采样
+            if greedy:
+                act_k = cast(torch.Tensor, pi_.mean)
+            else:
+                act_k = pi_.sample()
+            act_k = torch.clip(act_k, 0, 1)
+
+            action = self._buf_act_min + act_k * self._buf_act_span
+            action = action.reshape(*_shphd, -1)  # (...,dimA)
+        else:
+            assert action.shape[:-1] == _shphd, ("invalid action shape", action.shape)
+            act_k = (action - self.action_min) / self._buf_act_span
+
+        if with_log_prob:
+            logpa = cast(torch.Tensor, pi_.log_prob(act_k))  # (B,dimA)
+            if logpa.shape[-1] > 1 and joint:
+                logpa = logpa.sum(-1, keepdim=True)  # (B,1)
+
+            logpa = logpa.reshape(*_shphd, -1)  # (...,dimA|1)
+        else:
+            logpa = None
+
+        if with_entropy:
+            entropy = pi_.entropy()  # (B,dimA)
+            if entropy.shape[-1] > 1 and joint:
+                entropy = entropy.sum(-1, keepdim=True)  # (B,1)
+            entropy = entropy.reshape(*_shphd, -1)  # (...,dimA|1)
+        else:
+            entropy = None
+        return action, logpa, entropy
 
     @torch.no_grad()
     def post_act(
         self,
-        obs_next: np.ndarray | torch.Tensor | None,
-        act: np.ndarray | torch.Tensor,
-        act_log_prob: np.ndarray | torch.Tensor,
-        rew: np.ndarray | torch.Tensor,
-        terminated: np.ndarray | torch.Tensor,
-        truncated: np.ndarray | torch.Tensor,
+        obs_next: torch.Tensor | np.ndarray | None,
+        act: torch.Tensor | np.ndarray,  # 环境动作
+        act_log_prob: torch.Tensor | np.ndarray,
+        rew: torch.Tensor | np.ndarray,
+        terminated: torch.Tensor | np.ndarray,
+        truncated: torch.Tensor | np.ndarray,
         global_step: int,
         env_indices: torch.Tensor | None = None,
     ) -> None:
         # 张量化
-        # if obs_next is not None:
-        #     obs_next = as_tsr(obs_next, device=self.device)
+        obs = self.state  # (B,dimX)
         act = as_tsr(act, device=self.device)
         act_log_prob = as_tsr(act_log_prob, device=self.device)
+        terminated = as_tsr(terminated, device=self.device)
+        truncated = as_tsr(truncated, device=self.device)
         rew = as_tsr(rew, device=self.device)
-        terminated = as_tsr(terminated, device=self.device, dtype=torch.bool)
-        truncated = as_tsr(truncated, device=self.device, dtype=torch.bool)
+        if obs_next is not None:
+            obs_next = as_tsr(obs_next, device=self.device)
+            pass
+        else:
+            raise NotImplementedError("不要后继状态你评估个锤子，上天啊")
 
-        current_iteration_batch = cast(
-            RolloutBatchProtocol,
-            Batch(
-                obs=self.state[env_indices],
-                act=act[env_indices],
-                act_log_prob=act_log_prob[env_indices],
-                rew=rew[env_indices],
-                terminated=terminated[env_indices],
-                truncated=truncated[env_indices],
-                done=truncated[env_indices] | terminated[env_indices],
-            ),
-        )
-        self.replay_buffer.add(current_iteration_batch, env_indices)
-
-        self.returns[env_indices] += rew[env_indices]
-        done = terminated | truncated
-        if torch.any(done):
+        self.returns[...] += rew
+        done = terminated | truncated  # (B,1)
+        if done.any():
             indices = torch.where(done)[0]
+
             if self.writer:
-                rets = self.returns[indices].cpu()
+                rets = cast(np.ndarray, self.returns[indices].cpu().numpy())
                 self.writer.add_scalar(
                     f"return/{self.name}_mean",
-                    rets.mean(dim=0).item(),
+                    np.mean(rets).item(),
                     global_step=global_step,
                 )
                 if len(indices) > 1:
                     self.writer.add_scalar(
                         f"return/{self.name}_std",
-                        rets.std(dim=0).item(),
+                        np.std(rets).item(),
                         global_step=global_step,
                     )
             self.returns[indices] = 0.0
 
+        index_store = slice(None) if env_indices is None else env_indices
+        current_iteration_batch = cast(
+            RolloutBatchProtocol,
+            Batch(
+                obs=obs[index_store],  # (B,dimX)
+                act=act[index_store],  # (B,dimA)
+                act_log_prob=act_log_prob,  # (B,1)
+                obs_next=obs_next[index_store],  # (B,dimX)
+                rew=rew[index_store],  # (B,1)
+                terminated=terminated[index_store],  # (B,1)
+                truncated=truncated[index_store],  # (B,1)
+            ),
+        )
+        self.replay_buffer.add(current_iteration_batch, env_indices)
+
     def update(self, global_step: int):
         data_batch = self.replay_buffer.sample()
         # 张量化
-        obs = as_tsr(data_batch.obs, device=self.device, dtype=self.dtype)
+        obs = as_tsr(data_batch.obs, device=self.device, dtype=self.dtype)  # (L,B,dimX)
         act = as_tsr(data_batch.act, device=self.device)
         act_log_prob = as_tsr(data_batch.act_log_prob, device=self.device)
         rew = as_tsr(data_batch.rew, device=self.device)
@@ -202,38 +320,69 @@ class PPOContinuous(Agent):
         ndone = 1.0 - done
 
         # 归一化
-        obs = normalize(obs, self.observation_low, self.observation_high)
-        obs_next = normalize(obs_next, self.observation_low, self.observation_high)
+        obs = normalize(obs, self.observation_min, self.observation_max)
+        obs_next = normalize(obs_next, self.observation_min, self.observation_max)
 
-        # Calculate the advantage using GAE
-        with torch.no_grad():  # adv and v_target have no gradient
-            v_s: torch.Tensor = self.critic(obs)
-            v_s = v_s.detach()
-            v_s_prime: torch.Tensor = self.critic(obs_next)
-            v_s_prime = v_s_prime.detach()
-
-        adv = torch.zeros_like(rew)
-        delta = rew + self.gamma * ndone * v_s_prime - v_s
-        discount = ndone * self.gamma * self.gae_lambda
-        _gae = torch.zeros_like(discount[0])
-        for i in range(len(adv) - 1, -1, -1):
-            _gae = delta[i] + discount[i] * _gae
-            adv[i] = _gae
-
-        v_target = adv + v_s
-        if self.use_adv_norm:
-            adv = (adv - adv.mean()) / (adv.std() + 1e-5)
+        adv_freq = 1  # 重算优势函数的间隔
 
         # Optimize policy for K epochs:
+        actor = self.actor
         for _ in range(self.repeat):
+            # Calculate the advantage using GAE
+            with torch.no_grad():  # adv and v_target have no gradient
+                v_s: torch.Tensor = self.critic(obs)
+                v_s = v_s.detach()
+                v_s_prime: torch.Tensor = self.critic(obs_next)
+                v_s_prime = v_s_prime.detach()
+
+            adv = torch.zeros_like(rew)
+            delta = rew + self.gamma * ndone * v_s_prime - v_s
+            discount = ndone * self.gamma * self.gae_lambda
+            _gae = torch.zeros_like(discount[0])
+            for i in range(len(adv) - 1, -1, -1):
+                _gae = delta[i] + discount[i] * _gae
+                adv[i] = _gae
+
+            v_target = adv + v_s
+            if self.use_adv_norm:
+                adv = (adv - adv.mean()) / (adv.std() + 1e-5)
             for index in BatchSampler(
                 SubsetRandomSampler(range(len(data_batch))), self.mini_batch_size, False
             ):
-                dist = self.actor.get_dist(obs[index])
-                dist_entropy = dist.entropy().sum(-1, keepdim=True)
-                a_logprob_now: torch.Tensor = dist.log_prob(act[index])
+                _obs = obs[index]
+                _act = act[index]
+                _obs2 = obs_next[index]
+                _nterm2 = ndone[index]
+
+                # Calculate the advantage using GAE
+                with torch.no_grad():  # adv and v_target have no gradient
+                    v_s: torch.Tensor = _nterm2 * self.critic(_obs)
+                    v_s = v_s.detach()
+                    v_s_prime: torch.Tensor = self.critic(obs_next)
+                    v_s_prime = v_s_prime.detach()
+
+                adv = torch.zeros_like(rew)
+                delta = rew + self.gamma * ndone * v_s_prime - v_s
+                discount = ndone * self.gamma * self.gae_lambda
+                _gae = torch.zeros_like(discount[0])
+                for i in range(len(adv) - 1, -1, -1):
+                    _gae = delta[i] + discount[i] * _gae
+                    adv[i] = _gae
+
+                rst = self._integ_infer(
+                    _obs,
+                    _act,
+                    with_log_prob=True,
+                    with_entropy=True,
+                    store_state=False,
+                )
+                logpa_new = cast(torch.Tensor, rst[1])
+                dist_entropy = cast(torch.Tensor, rst[2])
+
+                logpa_new = logpa_new.sum(-1, keepdim=True)
+                dist_entropy = dist_entropy.sum(-1, keepdim=True)
                 ratio = torch.exp(
-                    a_logprob_now.sum(-1, keepdim=True)
+                    logpa_new.sum(-1, keepdim=True)
                     - act_log_prob[index].sum(-1, keepdim=True)
                 )
 
@@ -251,8 +400,9 @@ class PPOContinuous(Agent):
                     torch.nn.utils.clip_grad_norm_(self.actor.parameters(), 0.5)
                 self.optimizer_actor.step()
 
-                v_s = self.critic(obs[index])
+                v_s = self.critic(_obs)
                 critic_loss = F.mse_loss(v_target[index], v_s)
+
                 # Update critic
                 self.optimizer_critic.zero_grad()
                 critic_loss.backward()

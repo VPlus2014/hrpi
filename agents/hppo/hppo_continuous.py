@@ -304,7 +304,7 @@ class HPPOContinuous(Agent):
             terminated=terminated,
             truncated=truncated,
             global_step=global_step,
-            env_indices=self.h_indices,
+            index_store=self.h_indices,
         )
         self.__rew[self.h_indices] = 0.0
 

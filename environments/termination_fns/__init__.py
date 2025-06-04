@@ -1,5 +1,5 @@
 from .base_termination_fn import BaseTerminationFn
 from .low_altitude_termination_fn import LowAltitudeTerminationFn
-from .low_tas_termination_fn import LowAirSpeedTerminationFn
+from .navigation.low_tas_termination_fn import LowAirSpeedTerminationFn
 from .reach_navigation_point_max_num_termination_fn import ReachNavigationPointMaxNumTerminationFn
 from .timeout_termination_fn import TimeoutTerminationFn

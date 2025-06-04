@@ -1,4 +1,4 @@
 # Ignore the output directory
 /runs/
-/output/
+/outputs/
 /results*/

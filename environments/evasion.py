@@ -27,12 +27,12 @@ from .utils.math import (
     vec_cosine,
 )
 from environments.utils.tacview_render import ObjectState, AircraftAttr, MissileAttr
-from environments.reword_fns import (
+from environments.reward_fns import (
     TimeRewardFn,
     LowAltitudeRewardFn,
     LowAirSpeedRewardFn,
 )
-from environments.reword_fns.evasion import *
+from environments.reward_fns.evasion import *
 from environments.termination_fns import *
 from environments.termination_fns.evasion import *
 
@@ -81,8 +81,9 @@ class EvasionEnv(gymnasium.Env):
 
         # 创建战斗机模型(逃逸者)
         self.aircraft = PointMassAircraft(
-            model_name="agent",
-            model_color="Red",
+            acmi_name="J-20",
+            acmi_color="Red",
+            call_sign="agent1",
             position_e=torch.cat(
                 [
                     torch.zeros(size=(self.num_envs, 2)),
@@ -101,8 +102,8 @@ class EvasionEnv(gymnasium.Env):
             self.position_max_limit - self.position_min_limit
         )
         self.missile = PointMassMissile(
-            model_name="missile",
-            model_color="Blue",
+            call_sign="missile",
+            acmi_color="Blue",
             position_g=positions,
             target=self.aircraft,
             sim_step_size_ms=sim_step_size_ms,
@@ -287,7 +288,7 @@ class EvasionEnv(gymnasium.Env):
             self.missile.run(n_cmd)
 
             self.__sim_time_ms += self.sim_step_size_ms
-        self.missile.step_miss()
+        self.missile.try_miss()
 
         rew = self.__get_rew()
         truncated = torch.zeros(
@@ -345,7 +346,7 @@ class EvasionEnv(gymnasium.Env):
         ad_g = self.missile._N * torch.cross(
             dv, omega, dim=-1
         )  # required acceleration in earth frame (...,3)
-        a_f = quat_rotate(self.missile.Q_ea, ad_g)
+        a_f = quat_rotate(self.missile.Q_ew(), ad_g)
 
         return torch.clip(
             a_f[..., 1:] / self.missile._g,
@@ -360,9 +361,9 @@ class EvasionEnv(gymnasium.Env):
 
         aircraft_state = ObjectState(
             sim_time_s=self.sim_time_s[0].item(),
-            name=self.aircraft.model_name,
+            name=self.aircraft.uid,
             attr=AircraftAttr(
-                Color=self.aircraft.model_color,
+                Color=self.aircraft.acmi_color,
                 TAS=self.aircraft.tas[0].item(),
             ),
             pos_ned=self.aircraft.position_e[0].clone().cpu(),
@@ -371,17 +372,17 @@ class EvasionEnv(gymnasium.Env):
         self.__objects_states.append(aircraft_state)
 
         # missile
-        euler = euler_from_quat(self.missile.Q_ea[0])
-        euler[0] = 0.0
+        mis = self.missile
+        rpy_rad = mis.rpy_eb()
 
         missile_state = ObjectState(
             sim_time_s=self.sim_time_s[0].item(),
-            name=self.missile.model_name,
+            name=mis.uid,
             attr=MissileAttr(
-                Color=self.missile.model_color,
-                TAS=self.missile.tas[0].item(),
+                Color=mis.acmi_color,
+                TAS=mis.tas[0].item(),
             ),
-            pos_ned=self.missile.position_e[0].clone().cpu(),
+            pos_ned=mis.position_e[0].clone().cpu(),
             rpy_rad=euler.cpu(),
         )
         self.__objects_states.append(missile_state)
@@ -400,7 +401,7 @@ class EvasionEnv(gymnasium.Env):
                     f.write(
                         "{},T={}".format(
                             object_state.id,
-                            "|".join(["{:7f}".format(v) for v in object_state.pos_lla]),
+                            "|".join(["{:7f}".format(v) for v in object_state.pos_lbh]),
                         )
                     )
 

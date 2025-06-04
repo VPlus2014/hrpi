@@ -1,17 +1,32 @@
-import torch
+from __future__ import annotations
 from typing import TYPE_CHECKING
+import torch
 from abc import ABC, abstractmethod
+
 if TYPE_CHECKING:
-    from environments.navigation import NavigationEnv
+    from ..proto4venv import TrueVecEnv
+    from ..models.aircraft import BaseAircraft
+
 
 class BaseTerminationFn(ABC):
     def __init__(self) -> None:
         super().__init__()
 
     @abstractmethod
-    def reset(self, **kwargs) -> None:
-        ...
+    def reset(self, env: TrueVecEnv, **kwargs) -> None:
+        pass
 
     @abstractmethod
-    def __call__(self, env: "NavigationEnv", **kwargs) -> torch.Tensor:
-        ...
+    def forward(self, env: TrueVecEnv, plane: BaseAircraft, **kwargs) -> torch.Tensor:
+        pass
+
+    def __call__(self, env: TrueVecEnv, plane: BaseAircraft, **kwargs) -> torch.Tensor:
+        rst = self.forward(env, plane, **kwargs)
+        shape = rst.shape
+        assert shape == (env.num_envs, 1), (
+            "expected shape=(-1,1) got",
+            shape,
+            "@",
+            self.__class__.__name__,
+        )
+        return rst
