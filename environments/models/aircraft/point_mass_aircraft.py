@@ -13,7 +13,7 @@ from .base_aircraft import BaseModel, BaseAircraft
 _DEBUG = True
 
 # from .base_aircraft import BaseMissile
-from ...utils.math import (
+from ...utils.math_torch import (
     normalize,
     Qx,
     Qy,
@@ -40,6 +40,7 @@ class PointMassAircraft(BaseAircraft):
         tas: torch.Tensor,
         rpy_ew: torch.Tensor | float = 0,
         alpha: torch.Tensor | float = 0,
+        rho=1.29,
         **kwargs,
     ) -> None:
         """引入迎角控制的伪DOF6刚体飞机(无转动惯量 & 小迎角&无侧滑)
@@ -58,7 +59,7 @@ class PointMassAircraft(BaseAircraft):
         )
         device = self.device
         dtype = self.dtype
-        bsz = self.batchsize
+        bsz = self.batch_size
 
         # simulation parameters
         self._m = 7500  # aircraft mass, unit: kg
@@ -69,6 +70,7 @@ class PointMassAircraft(BaseAircraft):
         self._k_D = 0.179  # 升致阻力因子
         self._a_tmax = 7.0  #
         self._alpha_max = math.radians(15)  # 最大迎角(安全阈值<=15 deg), unit: rad
+        self._rho = 1.29  # atmosphere density, unit: kp/m^3
         #
         self._tau_mu = 2.0  # 滚转响应 惯性时间常数 unit: sec
         self._tau_alpha = 2.0  # 迎角响应 惯性时间常数 unit: sec
@@ -88,6 +90,11 @@ class PointMassAircraft(BaseAircraft):
         self._ic_rpy_ew.copy_(rpy_ew + torch.zeros_like(self._ic_rpy_ew))
         self._ic_tas.copy_(tas + _0)
         self._ic_alpha.copy_(alpha + _0)
+
+        # 控制量
+        self._Td = torch.empty_like(_0)  # 期望推力
+        self._alpha_d = torch.empty_like(_0)  # 期望迎角
+        self._mu_d = torch.empty_like(_0)  # 期望滚转角
 
         # 过载
         self._nx = torch.zeros((bsz, 1), device=device, dtype=dtype)
@@ -113,20 +120,45 @@ class PointMassAircraft(BaseAircraft):
         self._propagate(env_indices)
         pass
 
-    def run(self, action: np.ndarray | torch.Tensor):
+    def set_action(self, action: np.ndarray | torch.Tensor):
         """
-        控制量约定: 全部在 [0,1] 内!
+        控制量约定: 全部在 [-1,1] 内!
         """
-        device = self.device
-        dtype = self.dtype
+        logr = self.logr
         if not isinstance(action, torch.Tensor):
-            action = torch.asarray(action, device=device, dtype=dtype)
+            action = torch.tensor(action, device=self.device, dtype=self.dtype)
 
-        t = self.sim_time_s
+        thrust_cmd, alpha_cmd, mu_cmd = torch.split(
+            action, [1, 1, 1], dim=-1
+        )  # (...,1)
+
+        mu_d = mu_cmd * _PI  # 期望滚转角
+        alpha_d = affcmb(
+            2 * alpha_cmd + 1, -self._alpha_max, self._alpha_max
+        )  # 期望迎角
+        thrust_d = affcmb(2 * thrust_cmd + 1, self._T_min, self._T_max)  # 期望推力
+
+        self._Td.copy_(thrust_d)
+        self._alpha_d.copy_(alpha_d)
+        self._mu_d.copy_(mu_d)
+
+        if _DEBUG:
+            logr.debug(
+                {
+                    "thrust_cmd": thrust_cmd[0].item(),
+                    "alpha_cmd": alpha_cmd[0].item(),
+                    "mu_cmd": mu_cmd[0].item(),
+                    "thrust_d": thrust_d[0].item(),
+                    "alpha_d": alpha_d[0].item(),
+                    "mu_d": mu_d[0].item(),
+                }
+            )
+
+    def run(self):
+        t = self.sim_time_s()
         pos_e_next, tas_next, Qew_next, mu_next, alpha_next = self._run_ode(
             dt_s=self.sim_step_size_s,
             t_s=t,
-            action=action,
             pos_e=self._pos_e,
             tas=self._tas,
             Qew=self._Q_ew,
@@ -143,7 +175,7 @@ class PointMassAircraft(BaseAircraft):
         self.set_alpha(alpha_next)
 
         self._propagate()
-        super().run(action)
+        super().run()
 
     def _propagate(self, index: _SupportedIndexType = None):
         """(reset&step 复用)运动学关键状态(TAS,Qew,mu,alpha)->全体缓存状态"""
@@ -164,7 +196,6 @@ class PointMassAircraft(BaseAircraft):
         self,
         dt_s: float | torch.Tensor,  # 积分步长(不考虑掩码) unit: sec
         t_s: float | torch.Tensor,  # 初始时间 unit: sec
-        action: torch.Tensor,
         pos_e: torch.Tensor,  # 初始位置地轴系坐标
         tas: torch.Tensor,  # 初始真空速
         Qew: torch.Tensor,  # 初始地轴系/体轴系四元数
@@ -190,31 +221,12 @@ class PointMassAircraft(BaseAircraft):
         use_gravity = True  # 考虑重力
         use_overloading = True  # 输出过载
         ode_solver = ode_rk23
-        logr = self.logr
 
-        thrust_cmd, alpha_cmd, mu_cmd = torch.split(
-            action, [1, 1, 1], dim=-1
-        )  # (...,1)
-
-        mu_d = affcmb(mu_cmd, -_PI, _PI)  # 期望滚转角
-        alpha_d = affcmb(alpha_cmd, -self._alpha_max, self._alpha_max)  # 期望迎角
-        thrust_d = affcmb(thrust_cmd, self._T_min, self._T_max)  # 期望推力
-
-        if _DEBUG:
-            logr.debug(
-                {
-                    "thrust_cmd": thrust_cmd[0].item(),
-                    "alpha_cmd": alpha_cmd[0].item(),
-                    "mu_cmd": mu_cmd[0].item(),
-                    "thrust_d": thrust_d[0].item(),
-                    "alpha_d": alpha_d[0].item(),
-                    "mu_d": mu_d[0].item(),
-                }
-            )
-
-        _0 = torch.zeros_like(self._tas)
-        _1 = torch.ones_like(_0)
-        _e1 = torch.cat([_1, _0, _0], -1)
+        _0 = self._0f
+        _1 = self._1f
+        mu_d = self._mu_d
+        alpha_d = self._alpha_d
+        thrust_d = self._Td
 
         def _f(
             t: torch.Tensor,
@@ -234,7 +246,7 @@ class PointMassAircraft(BaseAircraft):
             Qwb = Qy(alpha)
             Qbw = quat_conj(Qwb)
 
-            F_b = torch.zeros_like(_e1)  # 过载合力(体轴) (B,3)
+            F_b = _0.clone()  # 过载合力(体轴) (B,3)
 
             T = thrust_d  # 推力 (B,1)
             F_b[..., 0:1] += T
@@ -257,7 +269,7 @@ class PointMassAircraft(BaseAircraft):
                 self._ny.copy_(ny)
                 self._nz.copy_(-nz)
             if use_gravity:
-                a_b += quat_rotate(Qwe, self.g_e)
+                a_b += quat_rotate(Qwe, self.g_e())
 
             a_w = quat_rotate(Qwb, a_b)  # 惯性加速度风轴分量
 

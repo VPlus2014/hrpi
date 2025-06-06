@@ -7,7 +7,20 @@ import gymnasium as gym
 from tqdm import tqdm
 from contextlib import ContextDecorator
 
+
 from tools import init_seed, as_np, as_tsr, ConextTimer
+def _setup():
+    import sys
+    from pathlib import Path
+
+    __FILE = Path(__file__)
+    ROOT = __FILE.parents[1]  # /../..
+    if str(ROOT) not in sys.path:
+        sys.path.append(str(ROOT))
+    return ROOT
+
+
+ROOT = _setup()
 
 
 def main():

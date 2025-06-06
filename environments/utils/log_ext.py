@@ -99,10 +99,10 @@ class LogConfig:
     file_append: bool = True
     """是否不覆盖写入, 默认为不覆盖"""
 
-    def make(self):
+    def remake(self):
         cfg = self.__dict__
         logr = reset_logger(**cfg)
-        logr.debug(("init with config", cfg))
+        logr.debug(("logger config:", cfg))
         return logr
 
 

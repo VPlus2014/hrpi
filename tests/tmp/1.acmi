@@ -1,0 +1,12 @@
+﻿FileType=text/acmi/tacview
+FileVersion=2.1
+0,ReferenceTime=2025-06-06T00:00:00Z
+#0.00
+A0000,T=104.9999924|30.0000877|17549.10|0.0|-0.0|0.0,Name=J-10,Color=Red,CallSign=F0xA0000,tas=[240.20103]
+0,Event=Bookmark|spawn M0xB2000
+0,Event=Bookmark|spawn M0xB2001
+#0.04
+A0000,T=104.9999924|30.0001736|17549.79|0.0|-0.0|0.0,Name=J-10,Color=Red,CallSign=F0xA0000,tas=[240.40207]
+B2000,T=104.6537552|30.1212616|13470.40|20.7|6.6|112.0,Name=AIM-9M,Color=Blue,Type=Weapon+Missile,CallSign=M0xB2000,tas=[463.05585]
+B2001,T=105.0842514|29.6850662|14694.28|-26.3|4.7|-13.2,Name=AIM-9M,Color=Blue,Type=Weapon+Missile,CallSign=M0xB2001,tas=[490.4959]
+0,Event=Bookmark|PAUSE

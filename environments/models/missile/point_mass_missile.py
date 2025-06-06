@@ -7,7 +7,7 @@ from .base_missile import BaseMissile
 from ..aircraft.base_aircraft import BaseAircraft
 
 # from .base_aircraft import BaseMissile
-from environments.utils.math import (
+from environments.utils.math_torch import (
     quat_rotate_inv,
     normalize,
     Qx,
@@ -41,10 +41,10 @@ class PointMassMissile(BaseMissile):
 
         # simulation variables
         self._chi = chi = torch.zeros(
-            (self.batchsize, 1), device=device, dtype=dtype
+            (self.batch_size, 1), device=device, dtype=dtype
         )  # 航迹方位角(Course)
         self._gamma = gamma = torch.zeros(
-            (self.batchsize, 1), device=device, dtype=dtype
+            (self.batch_size, 1), device=device, dtype=dtype
         )  # 航迹倾斜角
         self._Qgk = quat_mul(Qz(chi), Qy(gamma))
         self._ppgt_Vb2Ve()
@@ -67,7 +67,7 @@ class PointMassMissile(BaseMissile):
     def m(self) -> torch.Tensor:
         return (
             self._m0
-            - torch.clamp(self.sim_time_s, max=self._t_thrust_s).unsqueeze(-1)
+            - torch.clamp(self.sim_time_s(), max=self._t_thrust_s).unsqueeze(-1)
             * self._dm
         )
 
@@ -164,8 +164,8 @@ class PointMassMissile(BaseMissile):
     def G_e(self) -> torch.Tensor:
         return self._g * torch.cat(
             [
-                torch.zeros(size=(self.batchsize, 2), device=self.device),
-                torch.ones(size=(self.batchsize, 1), device=self.device),
+                torch.zeros(size=(self.batch_size, 2), device=self.device),
+                torch.ones(size=(self.batch_size, 1), device=self.device),
             ],
             dim=-1,
         )
@@ -173,7 +173,7 @@ class PointMassMissile(BaseMissile):
     @property
     def T_b(self) -> torch.Tensor:
         mask = self.sim_time_s < self._t_thrust_s
-        T_b = torch.tensor([self._T], device=self.device).repeat(self.batchsize)
+        T_b = torch.tensor([self._T], device=self.device).repeat(self.batch_size)
         return (mask * T_b).unsqueeze(-1)
 
     def D_w(

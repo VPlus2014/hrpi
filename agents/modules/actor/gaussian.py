@@ -25,7 +25,7 @@ class GaussianActor(nn.Module):
         action_max: torch.Tensor,
         hidden_sizes: Sequence[int] = (),
         logr: logging.Logger = logr,
-        max_std_ratio: float = 0.1,
+        max_std_ratio: float = 1.0,
     ):
         super().__init__()
         self.logr = logr

@@ -1,23 +1,31 @@
-# 250601 飞仿相关张量运算扩展
+# 250605 飞仿相关张量运算扩展(针对pytorch)
 from __future__ import annotations
 from typing import TYPE_CHECKING
+from math import pi as _PI, e as _E, tau as _2PI
 
 if TYPE_CHECKING:
     from typing_extensions import TypeAlias
 from typing import Sequence, Callable, Union
 import torch
 
-_stack = torch.stack
-_cat = torch.cat
-_zeros_like = torch.zeros_like
-_ones_like = torch.ones_like
-_sin = torch.sin
-_cos = torch.cos
-_atan2 = torch.atan2
-_asin = torch.asin
-_where = torch.where
-
-_PI = torch.pi
+_bkbn = torch
+_stack = _bkbn.stack
+_cat = _bkbn.cat
+_zeros_like = _bkbn.zeros_like
+_ones_like = _bkbn.ones_like
+_sin = _bkbn.sin
+_cos = _bkbn.cos
+_atan2 = _bkbn.atan2
+_asin = _bkbn.asin
+_where = _bkbn.where
+_pow = _bkbn.pow
+_sqrt = _bkbn.sqrt
+_split = _bkbn.split
+_norm = _bkbn.norm
+_clamp = _bkbn.clamp
+_clip = _clamp
+_reshape = _bkbn.reshape
+NDArray = torch.Tensor
 
 
 def affcmb(w, a, b):
@@ -36,6 +44,34 @@ def affcmb(w, a, b):
         Affine combination of a and b, shape (..., dims).
     """
     return a + (b - a) * w
+
+
+def affcmb_inv(y, a, b):
+    """
+    仿射组合的逆运算
+
+    Args:
+        y: a+w*(b-a), shape (..., 1)
+        a: 端点1, shape (..., dims)
+        b: 端点2, shape (..., dims)
+
+    Returns:
+        w: 仿射系数
+    """
+    m = b - a
+    # assert all(m!= 0)
+    is0 = (m == 0) + 0.0
+    return ((y - a) * is0) / (m + is0)
+
+
+def B01toI(x: torch.Tensor) -> torch.Tensor:
+    """B(0,1)=[-1,1]->I=[0,1]"""
+    return (x + 1) * 0.5
+
+
+def ItoB01(x: torch.Tensor) -> torch.Tensor:
+    """I=[0,1]->B(0,1)=[-1,1]"""
+    return x * 2 - 1
 
 
 @torch.jit.script
@@ -700,40 +736,43 @@ def euler_from_quat(
     return rpy2quat_inv(q, roll_ref_rad)
 
 
-def _xyz2aer(xyz: torch.Tensor) -> torch.Tensor:
-    x, y, z = torch.unbind(xyz, dim=-1)  # (...,)
-    rxy = torch.sqrt(torch.pow(y, 2) + torch.pow(x, 2))
-    slant_range = torch.norm(xyz, p=2, dim=-1)
-
-    eps = 1e-6
-    rxy_is_0 = rxy < eps
-    az = torch.where(
-        rxy_is_0,
-        torch.zeros_like(x),
-        torch.atan2(y, x),
-    )  # azimuth(yaw)
-    elev = torch.where(
-        rxy_is_0,
-        torch.sign(z) * -(torch.pi * 0.5),
-        torch.atan2(-z, rxy),
-    )  # elevation(pitch)
-    return torch.stack([az, elev, slant_range], dim=-1)
+from pymap3d import enu2aer
 
 
-def xyz2aer(xyz: torch.Tensor) -> torch.Tensor:
-    r"""求解 xyz 直角坐标对应的绕Z角a、绕Y角e、模长r\
-    (1,0,0) 按 绕Z旋转y-绕Y旋转p 得到 (x,y,z)
+@torch.jit.script
+def _ned2aer(xyz: torch.Tensor) -> torch.Tensor:
+    _R = torch.norm(xyz, p=2, dim=-1, keepdim=True)
+    x, y, z = _split(xyz, [1, 1, 1], dim=-1)  # (...,1)
+    _is0 = _R < 1e-3  # 过零处理
+    _1 = _ones_like(x)
+    _0 = _zeros_like(x)
+    x = _where(_is0, _1, x)
+    y = _where(_is0, _0, y)
+    z = _where(_is0, _0, z)
+    rxy2 = _pow(y, 2) + _pow(x, 2)
+    rxy = _sqrt(rxy2)
+    slantRange = torch.sqrt(rxy2 + torch.pow(z, 2))
+
+    elev = _atan2(-z, rxy)  # -> [-pi/2,pi/2]
+    azi = _atan2(x, y) % _2PI  # -> [0,2pi)
+    return torch.stack([azi, elev, slantRange], dim=-1)
+
+
+def ned2aer(xyz: torch.Tensor) -> torch.Tensor:
+    r"""求解 NED xyz 直角坐标对应的 方位角 azimuth, 俯仰角 elevation, 距离 r\
+    即 (r,0,0) 依次 绕Z内旋 azimuth, 绕Y内旋 elevation 得到 (x,y,z), 右手定则
 
     Args:
-        xyz (torch.Tensor): 直角坐标 shape: (...,3)
+        xyz (torch.Tensor): NED 直角坐标 shape: (...,3)
 
     Returns:
-        torch.Tensor: (a,e,r) shape: (...,3)
+        aer (torch.Tensor): shape: (...,3)
     """
-    return _xyz2aer(xyz)
+    return _ned2aer(xyz)
 
 
-def aer2xyz(aer: torch.Tensor) -> torch.Tensor:
+@torch.jit.script
+def _aer2ned(aer: torch.Tensor) -> torch.Tensor:
     az, el, r = torch.split(aer, [1, 1, 1], -1)  # (...,1)
 
     rxy = r * torch.cos(el)
@@ -743,8 +782,17 @@ def aer2xyz(aer: torch.Tensor) -> torch.Tensor:
     return torch.cat([x, y, z], -1)
 
 
-ned2aer = xyz2aer
-aer2ned = aer2xyz
+def aer2ned(aer: torch.Tensor) -> torch.Tensor:
+    """
+    ned2aer 的逆映射
+    Args:
+        aer (torch.Tensor): 方位角 azimuth, 俯仰角 elevation, 距离 r\
+            即 (r,0,0) 依次 绕Z内旋 azimuth, 绕Y内旋 elevation 得到 (x,y,z), 右手定则 shape: (...,3)
+
+    Returns:
+        ned (torch.Tensor): NED 直角坐标 shape: (...,3)
+    """
+    return _aer2ned(aer)
 
 
 @torch.jit.script
@@ -1072,6 +1120,54 @@ def delta_rad_reg(a: torch.Tensor, b: torch.Tensor):
     \argmin_{ d\in R=(-pi,pi]: d=a-b (mod |R|) } |d|
     $$"""
     return delta_reg(a, b, _PI)
+
+
+def calc_zem(
+    p1: NDArray,
+    v1: NDArray,
+    p2: NDArray,
+    v2: NDArray,
+    tmin=0,
+    tmax=None,
+) -> tuple[NDArray, NDArray]:
+    r"""
+    零控脱靶量
+
+    $$
+    \min_\{|(p_1+t v_1)-(p_2+t v_2)| | 0\leq t\leq t_\max\}
+    $$
+
+    Args:
+        p1: shape=(n|1,d) 群体1的初始位置(t=0)
+        v1: shape=(n|1,d) 群体1的速度
+        p2: shape=(m|1,d) 群体2的初始位置(t=0)
+        v2: shape=(m|1,d) 群体2的速度
+        tmin: 最小时间步, 默认为0
+        tmax: 最大时间步, 默认为None, 即 $\infty$
+    Returns:
+        rst: [MD, t_miss]
+
+            MD: 脱靶量 shape=(n,m,1)
+                $MD[i,j]:=min_{t\geq 0,t\leq tmax}\|(p1+t*v1)-(p2+t*v2)\|_2$
+
+            t_miss: 脱靶时间 shape=(n,m,1)
+                $t_{miss}[i,j]:=\min\argmin_{t\geq 0}\|(p1+t*v1)-(p2+t*v2)\|_2$
+    """
+    d = p1.shape[-1]
+    p1 = _reshape(p1, (-1, 1, d))
+    v1 = _reshape(v1, (-1, 1, d))
+    p2 = _reshape(p2, (1, -1, d))
+    v2 = _reshape(v2, (1, -1, d))
+    dp = p1 - p2
+    dv = v1 - v2
+    pv = (dp * dv).sum(-1, True)  # (n,m,1)
+    vv = (dv * dv).sum(-1, True)  # (n,m,1)
+    _zeroV = vv <= 1e-6  # 过零处理
+    _0 = 0 + vv
+    t_miss = _where(_zeroV, _0, -pv / (vv + _zeroV))  # (n,m,1)
+    t_miss = _clip(t_miss, tmin, tmax)  # 投影时间
+    md = _norm(dp + dv * t_miss, 2, -1, True)  # (n,m,1)
+    return md, t_miss
 
 
 def _demo():  # 自测

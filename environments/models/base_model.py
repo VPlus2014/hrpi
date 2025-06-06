@@ -1,13 +1,13 @@
 from __future__ import annotations
-import hashlib
-import os
-from types import EllipsisType
+from functools import cached_property
 from typing import TYPE_CHECKING
+import os
 import logging
+import numpy as np
 import torch
 from abc import ABC, abstractmethod
 from typing import Literal, Sequence, Union
-from ..utils.math import (
+from ..utils.math_torch import (
     quat_conj,
     quat_mul,
     quat_rotate,
@@ -27,85 +27,72 @@ _SupportedIndexType = Union[
 class BaseModel(ABC):
     STATUS_INACTIVATE = -1  # 未启动
     STATUS_ALIVE = 0  # 运行中
-    STATUS_DEAD = 1  # 结束
+    STATUS_DYING = 1  # 暂停
+    STATUS_DEAD = 2  # 结束
 
     logr = LOGR
 
     def __init__(
         self,
-        id: torch.Tensor | int,
-        position_e: torch.Tensor,
-        alt0: torch.Tensor | float,
+        id: torch.Tensor | int = 0,
+        batch_size: int = 1,
         device=torch.device("cpu"),
         dtype=torch.float32,
         sim_step_size_ms: int = 1,
-        call_sign: str = "",
+        use_gravity: bool = True,
+        g: torch.Tensor | float = 9.8,  # 默认重力加速度 m/s^2
+        use_eb=True,
+        use_ew=True,
+        use_wb=True,
+        use_geodetic: bool = True,
+        lat0: torch.Tensor | float = 0,
+        lon0: torch.Tensor | float = 0,
+        alt0: torch.Tensor | float = 0,
+        use_mass=False,
+        use_inertia=False,
         acmi_name: str = "",
         acmi_color: Literal["Red", "Blue"] | str = "Red",
         acmi_type: str = "",
-        use_gravity: bool = True,
+        acmi_parent: str = "",
+        call_sign: str = "",
+        vis_radius: float = 1.0,
     ) -> None:
-        """模型基类 BaseModel
-
+        """
+        质点模型组 BaseModel
         Args:
             id (torch.Tensor | int): Tacview Object ID (整数形式).
-            position_e (torch.Tensor): NED地轴系下的初始位置, 单位:m, shape: (n, 3)
-            alt0 (torch.Tensor | float, optional): 坐标原点高度, 单位:m.
             sim_step_size_ms (int, optional): 仿真步长, 单位:ms. Defaults to 1.
-            use_gravity (bool, optional): 是否启用重力(无则不支持计算重力). Defaults to True.
+            batch_size (int): 组大小, Defaults to 1.
             device (torch.device, optional): 所在torch设备. Defaults to torch.device("cpu").
             dtype (torch.dtype, optional): torch浮点类型. Defaults to torch.float32.
+            use_gravity (bool, optional): 是否启用重力(无则不支持计算重力). Defaults to True.
+            g (float, optional): 重力加速度, 单位:m/s^2. Defaults to 9.8.
+            use_eb (bool, optional): 是否启用地轴-体轴系状态. Defaults to True.
+            use_ew (bool, optional): 是否启用地轴-风轴系状态. Defaults to True.
+            use_wb (bool, optional): 是否启用风轴-体轴系状态. Defaults to True.
+            use_geodetic (bool, optional): 是否使用地理坐标. Defaults to True.
+            lat0 (torch.Tensor | float, optional): 坐标原点纬度, 单位:deg. float|shape: (B, 1)
+            lon0 (torch.Tensor | float, optional): 坐标原点经度, 单位:deg. float|shape: (B, 1)
+            alt0 (torch.Tensor | float, optional): 坐标原点高度, 单位:m. float|shape: (B, 1)
             acmi_color (Literal["Red", "Blue"] | str, optional): Tacview Color. Defaults to "Red".
             call_sign (str, optional): Tacview 呼号. Defaults to "".
             acmi_name (str, optional): Tacview 模型名(必须数据库中可检索否则无法正常渲染)
             acmi_type (str, optional): Tacview Object Type(符合ACMI标准). Defaults to "".
+            acmi_parent (str, optional): Tacview 父对象 ID. Defaults to "".
+            vis_radius (float, optional): 可视半径. Defaults to 1.0.
         """
 
         super().__init__()
-        self.acmi_color = acmi_color
-        self.acmi_name = acmi_name
-        self.acmi_type = acmi_type
-        self.call_sign = call_sign
-
-        self._sim_step_size_ms = sim_step_size_ms
+        self._batch_size = batch_size
         self._device = device = torch.device(device)
         self._dtype = dtype
-        self.use_gravity = use_gravity
-
-        # simulation paramters
-        self._rho = 1.29  # atmosphere density, unit: kp/m^3
-        self._g = 9.8  # acceleration of gravity, unit: m/s^2
-
-        # simulation variables
-        # initial conditions
-        assert len(position_e.shape) == 2 and position_e.shape[-1] == 3
-        self._ic_pos_e = position_e.to(device=device, dtype=dtype).clone()
-        """model initial position in NED local frame, unit: m, shape: (B, 3)"""
-        _shape = [self.batchsize]
+        _shape = [self.batch_size]
         _0f1 = torch.zeros(_shape + [1], device=device, dtype=dtype)
-
         self.id = torch.empty(_shape + [1], device=device, dtype=torch.int64)
         """Tacview Object ID, shape: (B,1)"""
         self.id.copy_(torch.asarray(id, device=device, dtype=torch.int64))
 
-        # cache variables
-        self._pos_e = torch.empty(_shape + [3], device=device, dtype=dtype)
-        """position in NED local frame, unit: m, shape: (B, 3)"""
-        self._vel_e = torch.empty(_shape + [3], device=device, dtype=dtype)
-        """velocity in NED local frame, unit: m/s, shape: (B, 3)"""
-        self._alt0 = _0f1 + alt0
-        """altitude, unit: m, shape: (B, 1)"""
-
-        # 常用缓存
-        self._0f = _0 = _0f1
-        self._1f = _1 = torch.ones_like(_0)
-        self._e1 = torch.cat([_1, _0, _0], -1)
-        self._e2 = torch.cat([_0, _1, _0], -1)
-        self._e3 = torch.cat([_0, _0, _1], -1)
-
-        if use_gravity:
-            self._g_e = self._g * self._e3
-            """重力加速度NED地轴系坐标, shape: (B, 3)"""
+        self._sim_step_size_ms = sim_step_size_ms
 
         self.status = BaseModel.STATUS_INACTIVATE + torch.zeros(
             size=_shape + [1], dtype=torch.int64, device=device
@@ -113,6 +100,104 @@ class BaseModel(ABC):
         self._sim_time_ms = torch.zeros(
             _shape + [1], dtype=torch.int64, device=device
         )  # (B,1)
+        self.health_point = (
+            torch.zeros(_shape + [1], device=device, dtype=dtype) + 100.0
+        )
+        """health point, shape: (B,1)"""
+        self._vis_radius = torch.empty(_shape + [1], device=device, dtype=dtype)
+        """可视半径, shape: (B,1)"""
+        self._vis_radius.copy_(_0f1 + vis_radius)
+
+        # simulation variables
+
+        # cache variables
+        self._pos_e = torch.empty(_shape + [3], device=device, dtype=dtype)
+        """position in NED local frame, unit: m, shape: (B, 3)"""
+        self._vel_e = torch.empty(_shape + [3], device=device, dtype=dtype)
+        """velocity in NED local frame, unit: m/s, shape: (B, 3)"""
+
+        # 常用缓存
+        self._0f = _0 = _0f1
+        self._1f = _1 = torch.ones_like(_0)
+        self._e1f = torch.cat([_1, _0, _0], -1)
+        self._e2f = torch.cat([_0, _1, _0], -1)
+        self._e3f = torch.cat([_0, _0, _1], -1)
+
+        self._g = torch.empty(_shape + [1], device=device, dtype=dtype)
+        self._g.copy_(_0f1 + g)
+        self.use_gravity = use_gravity
+        """是否启用NED地轴系重力加速度向量缓存"""
+        if use_gravity:
+            """重力加速度, 单位: m/s^2"""
+            self._g_e = torch.cat([_0, _0, self._g], -1)
+            """重力加速度NED地轴系坐标, shape: (B, 3)"""
+
+        # 本体飞控状态
+        #
+        self._tas = torch.zeros(
+            _shape + [1], device=device, dtype=dtype
+        )  # true air speed 真空速, unit: m/s, shape: (B,1)
+
+        self._use_eb = use_eb
+        if use_eb:
+            self._vel_b = torch.zeros(
+                _shape + [3], device=device, dtype=dtype
+            )  # 惯性速度体轴坐标 (U,V,W) shape: (B,3)
+            self._Q_eb = torch.zeros(
+                _shape + [4], device=device, dtype=dtype
+            )  # 地轴/体轴 四元数 shape: (B,4)
+            self._rpy_eb = torch.zeros(
+                _shape + [3], device=device, dtype=dtype
+            )  # 地轴/体轴 欧拉角 (roll, pitch, yaw) shape:(B,3)
+            self._omega_b = torch.zeros(
+                _shape + [3], device=device, dtype=dtype
+            )  # 体轴系下的旋转角速度 (P,Q,R) shape: (B,3)
+        if use_inertia:
+            assert use_eb, "use_inertia must be used with use_eb"
+            self._I_b = torch.empty(_shape + [3, 3], device=device, dtype=dtype)
+            self._I_b_inv = torch.empty(_shape + [3, 3], device=device, dtype=dtype)
+
+        self._use_ew = use_ew
+        if use_ew:
+            self._rpy_ew = torch.zeros(
+                _shape + [3], device=device, dtype=dtype
+            )  # 地轴/风轴 欧拉角 (mu, gamma, chi) shape:(B,3)
+            self._Q_ew = torch.zeros(
+                _shape + [4], device=device, dtype=dtype
+            )  # 地轴/风轴 四元数 shape: (B,4)
+            self._vel_w = torch.zeros(
+                _shape + [3], device=device, dtype=dtype
+            )  # 惯性速度风轴分量 (TAS,0,0) shape: (B,3)
+
+        self._use_wb = use_wb
+        if use_wb:
+            self._rpy_wb = torch.zeros(
+                _shape + [3], device=device, dtype=dtype
+            )  # 风轴/体轴 欧拉角 (0, alpha, -beta) shape:(B,3)
+            self._Q_wb = torch.zeros(
+                _shape + [4], device=device, dtype=dtype
+            )  # 风轴/体轴 四元数 shape: (B,4)
+
+        self._use_geodetic = use_geodetic
+        if use_geodetic:
+            self._blh0 = torch.empty(_shape + [3], device=device, dtype=dtype)
+            """坐标原点(纬度,经度,高度), 单位:(deg,m), shape: (B, 3)"""
+            self._blh0[..., 0:1] = lat0 + _0f1
+            self._blh0[..., 1:2] = lon0 + _0f1
+            self._blh0[..., 2:3] = alt0 + _0f1
+
+            self._blh = torch.empty(_shape + [3], device=device, dtype=dtype)
+
+            # self._lat.copy_(self._lat0)
+            # self._lon.copy_(self._lon0)
+            # self._alt.copy_(self._alt0)
+            # pos_e->(lat, lon, alt)
+            self._ppgt_z2alt()
+
+        self._use_mass = use_mass
+        if use_mass:
+            self._mass = torch.empty(_shape + [1], device=device, dtype=dtype)
+
         # if len(kwargs):
         #     msg = (
         #         self.__class__.__name__,
@@ -120,11 +205,24 @@ class BaseModel(ABC):
         #         list(kwargs.keys()),
         #     )
         #     LOGR.warning(msg)
+        self._is_reset = False
 
-    @property
-    def batchsize(self) -> int:
-        """批容量"""
-        return self._ic_pos_e.shape[0]
+        self.acmi_color = np.empty((batch_size,), dtype=object)
+        self.acmi_name = np.empty((batch_size,), dtype=object)
+        self.acmi_type = np.empty((batch_size,), dtype=object)
+        self.acmi_parent = np.empty((batch_size,), dtype=object)
+        self.call_sign = np.empty((batch_size,), dtype=object)
+        for i in range(batch_size):
+            self.acmi_color[i] = acmi_color
+            self.acmi_name[i] = acmi_name
+            self.acmi_type[i] = acmi_type
+            self.acmi_parent[i] = acmi_parent
+            self.call_sign[i] = call_sign
+
+    @cached_property
+    def batch_size(self) -> int:
+        """组容量"""
+        return self._batch_size
 
     @property
     def device(self) -> torch.device:
@@ -142,142 +240,115 @@ class BaseModel(ABC):
             idxs = slice(None)
         elif isinstance(batch_index, (slice, torch.Tensor)):
             idxs = batch_index
+        elif isinstance(batch_index, int):
+            idxs = [batch_index]
         else:
             idxs = torch.asarray(batch_index, device=self.device, dtype=torch.int64)
         # 不做检查
         return idxs
+
+    @property
+    def sim_step_size_ms(self) -> int:
+        """仿真步长, 单位:ms"""
+        return self._sim_step_size_ms
+
+    @property
+    def sim_step_size_s(self) -> float:
+        """仿真步长, 单位:s"""
+        return self._sim_step_size_ms * 1e-3
+
+    def vis_radius(self, index: _SupportedIndexType = None):
+        """实际遮蔽半径, 单位:m, shape: (B,1)"""
+        index = self.proc_batch_index(index)
+        return self._vis_radius[index] * self.is_alive(index)
 
     def position_e(self, batch_index: _SupportedIndexType = None) -> torch.Tensor:
         """position in NED local frame, unit: m, shape: (B, 3)"""
         batch_index = self.proc_batch_index(batch_index)
         return self._pos_e[batch_index, :]
 
-    def velocity_e(self, batch_index: _SupportedIndexType = None) -> torch.Tensor:
-        """velocity in NED local frame, unit: m/s, shape: (B, 3)"""
-        return self._vel_e[batch_index, :]
-
-    def altitude_m(self, batch_index: _SupportedIndexType = None) -> torch.Tensor:
-        """altitude, unit: m, shape: (B, 1)"""
+    def blh(self, batch_index: _SupportedIndexType = None) -> torch.Tensor:
+        """当前(纬度,经度,高度), 单位:(deg,m), shape: (B, 3)"""
         batch_index = self.proc_batch_index(batch_index)
-        return self._alt0[batch_index, :] - self._pos_e[batch_index, 2:3]
+        return self._blh[batch_index, :]
+
+    def blh0(self, batch_index: _SupportedIndexType = None) -> torch.Tensor:
+        """坐标原点(纬度,经度,高度), 单位:(deg,m), shape: (B, 3)"""
+        batch_index = self.proc_batch_index(batch_index)
+        return self._blh0[batch_index, :]
 
     def longitude_deg(self, batch_index: _SupportedIndexType = None) -> torch.Tensor:
         """longitude, unit: rad, shape: (B, 1)"""
-        raise NotImplementedError
+        batch_index = self.proc_batch_index(batch_index)
+        return self._blh[batch_index, 1:2]
 
     def latitude_deg(self, batch_index: _SupportedIndexType = None) -> torch.Tensor:
         """latitude, unit: rad, shape: (B, 1)"""
-        raise NotImplementedError
+        batch_index = self.proc_batch_index(batch_index)
+        return self._blh[batch_index, 0:1]
 
-    @property
-    def g_e(self) -> torch.Tensor:
+    def altitude_m(self, batch_index: _SupportedIndexType = None) -> torch.Tensor:
+        """海拔 altitude, unit: m, shape: (B, 1)"""
+        batch_index = self.proc_batch_index(batch_index)
+        return self._blh0[batch_index, 2:3] - self._pos_e[batch_index, 2:3]
+
+    def g_e(self, batch_index: _SupportedIndexType = None) -> torch.Tensor:
         """NED地轴系重力加速度向量"""
-        return self._g_e
+        batch_index = self.proc_batch_index(batch_index)
+        return self._g_e[batch_index, :]
 
-    @property
-    def sim_time_ms(self) -> torch.Tensor:
+    def sim_time_ms(self, batch_index: _SupportedIndexType = None) -> torch.Tensor:
         """model simulation time, unit: ms, shape: (B, 1)"""
-        return self._sim_time_ms
+        batch_index = self.proc_batch_index(batch_index)
+        return self._sim_time_ms[batch_index, :]
 
-    @property
-    def sim_time_s(
-        self, env_indices: Sequence[int] | torch.Tensor | None = None
-    ) -> torch.Tensor:
+    def sim_time_s(self, batch_index: _SupportedIndexType = None) -> torch.Tensor:
         """model simulation time, unit: s, shape: (B, 1)"""
-        return self.sim_time_ms * 1e-3
+        batch_index = self.proc_batch_index(batch_index)
+        return self.sim_time_ms(batch_index) * 1e-3
 
-    def reset(self, env_indices: _SupportedIndexType = None):
-        """重置 位置, 仿真时间, 仿真生命状态"""
-        env_indices = self.proc_batch_index(env_indices)
+    @abstractmethod
+    def reset(self, batch_index: _SupportedIndexType = None):
+        """状态复位"""
+        batch_index = self.proc_batch_index(batch_index)
 
-        self.status[env_indices] = BaseModel.STATUS_INACTIVATE
-        self._sim_time_ms[env_indices] = 0.0
+        self._sim_time_ms[batch_index] = 0.0
+        self.set_status(BaseModel.STATUS_INACTIVATE, batch_index)
 
-        self._pos_e[env_indices] = self._ic_pos_e[env_indices]
+        self._is_reset = True
 
-    def run(self):
-        self._sim_time_ms += self._sim_step_size_ms
+    def set_status(
+        self, status: int | torch.Tensor, dst_idx: _SupportedIndexType = None
+    ):
+        """设置仿真生命状态"""
+        dst_idx = self.proc_batch_index(dst_idx)
+        self.status[dst_idx] = status
 
-    def is_alive(self, env_indices: _SupportedIndexType = None) -> torch.Tensor:
+    @abstractmethod
+    def run(self, batch_index: _SupportedIndexType = None):
+        """仿真推进"""
+        assert self._is_reset, "Model must be reset before running"
+        self.update_time(batch_index)
+
+    def update_time(self, batch_index: _SupportedIndexType = None):
+        """更新仿真时间"""
+        batch_index = self.proc_batch_index(batch_index)
+        self._sim_time_ms[batch_index] += self._sim_step_size_ms
+
+    def is_alive(self, batch_index: _SupportedIndexType = None) -> torch.Tensor:
         """判断是否存活"""
-        env_indices = self.proc_batch_index(env_indices)
-        return self.status[env_indices] == self.__class__.STATUS_ALIVE
+        batch_index = self.proc_batch_index(batch_index)
+        return self.status[batch_index] == self.STATUS_ALIVE
 
-    @property
-    def sim_step_size_ms(self) -> int:
-        """仿真步长, 单位: ms"""
-        return self._sim_step_size_ms
+    def is_dying(self, batch_index: _SupportedIndexType = None) -> torch.Tensor:
+        """判断是否即将死亡"""
+        batch_index = self.proc_batch_index(batch_index)
+        return self.status[batch_index] == self.STATUS_DYING
 
-    @property
-    def sim_step_size_s(self) -> float:
-        """仿真步长, 单位: s"""
-        return self._sim_step_size_ms * 1e-3
-
-
-class BaseFV(BaseModel):
-
-    def __init__(
-        self,
-        use_eb=True,
-        use_ew=True,
-        use_wb=True,
-        **kwargs,
-    ) -> None:
-        """飞行器基类 BaseFV
-
-        Args:
-            use_eb (bool, optional): 是否启用地轴-体轴系状态. Defaults to True.
-            use_ew (bool, optional): 是否启用地轴-风轴系状态. Defaults to True.
-            use_wb (bool, optional): 是否启用风轴-体轴系状态. Defaults to True.
-            **kwargs: 其他参数, 参见 BaseModel.__init__
-        """
-        super().__init__(**kwargs)
-        device = self.device
-        dtype = self.dtype
-        _shape = [self.batchsize]
-
-        #
-        self.health_point = (
-            torch.zeros(_shape + [1], device=device, dtype=dtype) + 100.0
-        )  # health point, shape: (B,1)
-        #
-        # simulation variables
-        # 本体飞控状态
-        self._tas = torch.zeros(
-            _shape + [1], device=device, dtype=dtype
-        )  # true air speed 真空速, unit: m/s, shape: (B,1)
-        if use_eb:
-            self._vel_b = torch.zeros(
-                _shape + [3], device=device, dtype=dtype
-            )  # 惯性速度体轴坐标 (U,V,W) shape: (B,3)
-            self._Q_eb = torch.zeros(
-                _shape + [4], device=device, dtype=dtype
-            )  # 地轴/体轴 四元数 shape: (B,4)
-            self._rpy_eb = torch.zeros(
-                _shape + [3], device=device, dtype=dtype
-            )  # 地轴/体轴 欧拉角 (roll, pitch, yaw) shape:(B,3)
-            self._omega_b = torch.zeros(
-                _shape + [3], device=device, dtype=dtype
-            )  # 体轴系下的旋转角速度 (P,Q,R) shape: (B,3)
-
-        if use_ew:
-            self._rpy_ew = torch.zeros(
-                _shape + [3], device=device, dtype=dtype
-            )  # 地轴/风轴 欧拉角 (mu, gamma, chi) shape:(B,3)
-            self._Q_ew = torch.zeros(
-                _shape + [4], device=device, dtype=dtype
-            )  # 地轴/风轴 四元数 shape: (B,4)
-            self._vel_w = torch.zeros(
-                _shape + [3], device=device, dtype=dtype
-            )  # 惯性速度风轴分量 (TAS,0,0) shape: (B,3)
-
-        if use_wb:
-            self._rpy_wb = torch.zeros(
-                _shape + [3], device=device, dtype=dtype
-            )  # 风轴/体轴 欧拉角 (0, alpha, -beta) shape:(B,3)
-            self._Q_wb = torch.zeros(
-                _shape + [4], device=device, dtype=dtype
-            )  # 风轴/体轴 四元数 shape: (B,4)
+    def is_dead(self, batch_index: _SupportedIndexType = None) -> torch.Tensor:
+        """判断是否死亡"""
+        batch_index = self.proc_batch_index(batch_index)
+        return self.status[batch_index] == self.STATUS_DEAD
 
     def Q_eb(self, batch_index: _SupportedIndexType = None) -> torch.Tensor:
         """地轴系/体轴系四元数"""
@@ -326,9 +397,29 @@ class BaseFV(BaseModel):
 
     def activate(self, batch_index: _SupportedIndexType = None):
         batch_index = self.proc_batch_index(batch_index)
-        self.status[batch_index] = BaseFV.STATUS_ALIVE
+        self.status[batch_index] = BaseModel.STATUS_ALIVE
+
+    def mass(self, batch_index: _SupportedIndexType = None) -> torch.Tensor:
+        """质量, unit: kg, shape: (B, 1)"""
+        batch_index = self.proc_batch_index(batch_index)
+        return self._mass[batch_index, :]
+
+    def inertia(self, batch_index: _SupportedIndexType = None) -> torch.Tensor:
+        """体轴惯性矩阵, unit: kg*m^2, shape: (B, 3, 3)"""
+        batch_index = self.proc_batch_index(batch_index)
+        return self._I_b[batch_index, :, :]
 
     # propagation modules
+    def _ppgt_z2alt(self, batch_index: _SupportedIndexType = None):
+        """高度->海拔"""
+        batch_index = self.proc_batch_index(batch_index)
+        self._blh[batch_index, 2:3] = (
+            self._blh[batch_index, 2:3] - self._pos_e[batch_index, 2:3]
+        )
+
+    def _ppgt_pos_e2blh(self, batch_index: _SupportedIndexType = None):
+        """NED地轴系坐标->纬经高"""
+        raise NotImplementedError
 
     def _ppgt_rpy_eb2Qeb(self, batch_index: _SupportedIndexType = None):
         """地轴/体轴 欧拉角->四元数"""

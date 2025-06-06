@@ -5,14 +5,14 @@ from abc import abstractmethod
 from collections.abc import Sequence
 from copy import deepcopy
 
-from ..base_model import BaseModel, BaseFV
-from ...utils.math import (
+from ..base_model import BaseModel, BaseModel
+from ...utils.math_torch import (
     quat_rotate,
     quat_rotate_inv,
     rpy2quat,
     rpy2quat_inv,
     quat_mul,
-    xyz2aer,
+    ned2aer,
 )
 
 if TYPE_CHECKING:
@@ -20,7 +20,7 @@ if TYPE_CHECKING:
     from ..base_model import _SupportedIndexType
 
 
-class BaseAircraft(BaseFV):
+class BaseAircraft(BaseModel):
     STATUS_CRASH = 1  # 坠毁
     STATUS_SHOTDOWN = 2  # 被武器击落
     # todo: crash 与 shotdown 互斥?
@@ -41,12 +41,9 @@ class BaseAircraft(BaseFV):
         super().__init__(acmi_type=acmi_type, **kwargs)
         device = self.device
         dtype = self.dtype
-        nenvs = self.batchsize
+        nenvs = self.batch_size
 
         #
-        self.health_point = (
-            torch.zeros((self.batchsize, 1), device=device, dtype=dtype) + 100.0
-        )  # health point, shape: (B,1)
         self.carried_missiles = carried_missiles
 
     def reset(self, env_indices: _SupportedIndexType = None):
@@ -55,9 +52,6 @@ class BaseAircraft(BaseFV):
         super().reset(env_indices)
 
         self.health_point[env_indices] = 100.0
-
-    def run(self, action: torch.Tensor):
-        super().run()
 
     def activate(self, env_indices: _SupportedIndexType = None):
         env_indices = self.proc_batch_index(env_indices)

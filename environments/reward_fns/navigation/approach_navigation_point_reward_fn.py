@@ -6,7 +6,7 @@ if TYPE_CHECKING:
 
 import torch
 from ..base_reward_fn import BaseRewardFn
-from ...utils.math import ned2aer, vec_cosine
+from ...utils.math_torch import ned2aer, vec_cosine
 
 
 class ApproachNavigationPointRewardFn(BaseRewardFn):

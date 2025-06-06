@@ -1,6 +1,8 @@
 from __future__ import annotations
 from copy import deepcopy
+from dataclasses import dataclass
 import logging
+from os import PathLike
 import traceback
 from typing import TYPE_CHECKING
 
@@ -22,9 +24,10 @@ from typing import Any, Sequence
 from collections import OrderedDict
 from pathlib import Path
 from .models.base_model import BaseModel
-from .models.aircraft import BaseAircraft, PointMassAircraft, PesudoDOF6
+from .models.aircraft import BaseAircraft, PointMassAircraft, PDOF6Plane
 from .utils.space import space2box, flatten, unflatten
-from .utils.math import (
+from .utils.math_torch import (
+    B01toI,
     quat_enu_ned,
     quat_rotate,
     quat_rotate_inv,
@@ -46,8 +49,11 @@ _LOGR = logging.getLogger(__name__)
 
 class NavigationEnv(TrueSyncVecEnv):
     metadata: dict[str, Any] = {
-        "render_modes": ["tacview"],
-        "render_fps": 25,  # 渲染 ACMI 频率(仿真时间)
+        "render_fps": 25,  # 渲染频率, 单位:1/仿真sec
+        "render_modes": [
+            "tacview_local",  # ACMI 文件
+            "tacview_remote",  # 实时遥测
+        ],
     }
     name = "NavigationEnv"
 
@@ -71,27 +77,40 @@ class NavigationEnv(TrueSyncVecEnv):
         lon0: float = 116.4074,  # 坐标原点经度, deg
         alt0: float = 10000,  # 坐标原点高度, m
         render_mode: str | None = None,
-        render_dir: Path | None = None,
+        render_dir: PathLike | None = None,
         num_envs: int = 1,
         max_sim_ms: int = 600_000,  # 单局最大仿真时长(ms)
-        device=torch.device("cpu"),
-        dtype=torch.float,
+        device="cpu",
+        dtype=torch.float64,
         np_float=np.float32,
-        out_torch=1,  # step输出obs格式, 0->ndarray, 1->torch.Tensor
-        logconfig: LogConfig | None = None,  # 日志配置
+        out_torch=False,  # reset/step 输出格式, 0->numpy.ndarray, 1->torch.Tensor
+        logconfig: LogConfig | None = None,  # 日志配置(1 env: 1 logger) None-> 采纳 logname
+        logname: str | None = None, # 日志名称(1 env: 1 logger) None-> default logger
         debug=False,  # 调试模式
         version="2.0",
+        easy_gen=False,
     ):
         self._version = version
+        if logconfig is None:
+            logr = _LOGR if logname is None else logging.getLogger(logname)
+        else:
+            logr = logconfig.remake()
+        self.logr = logr
+        self.debug = debug
         super().__init__(num_envs=num_envs, device=device, dtype=dtype)
-        self.logr = _LOGR if logconfig is None else logconfig.make()
-        assert (
-            agent_step_size_ms > 0 and sim_step_size_ms > 0
-        ), "仿真步长及决策步长必须大于0"
+        assert agent_step_size_ms > 0 and sim_step_size_ms > 0, (
+            "仿真步长必须大于0",
+            sim_step_size_ms,
+        )
         assert (
             agent_step_size_ms // sim_step_size_ms > 0
             and agent_step_size_ms % sim_step_size_ms == 0
-        ), ("决策步长必须为仿真步长的整数倍", agent_step_size_ms, sim_step_size_ms)
+        ), (
+            "决策步长必须为仿真步长的正整数倍",
+            agent_step_size_ms,
+            "/",
+            sim_step_size_ms,
+        )
         self.agent_step_size_ms = agent_step_size_ms
         self.sim_step_size_ms = sim_step_size_ms
         self.np_float = np_float
@@ -103,6 +122,7 @@ class NavigationEnv(TrueSyncVecEnv):
         self.waypoints_visible_num = waypoints_visible_num  # horizon
         self.waypoints_R_ratio_min = waypoints_R_ratio_min
         self.waypoints_R_ratio_max = waypoints_R_ratio_max
+        self.easy_gen = easy_gen
         assert waypoints_R_ratio_min >= 0, (
             "expect waypoints_R_ratio_min>=0",
             waypoints_R_ratio_min,
@@ -149,13 +169,28 @@ class NavigationEnv(TrueSyncVecEnv):
         self.alt0 = alt0
         """坐标原点高度, m"""
 
-        self.render_mode = render_mode
         self.render_env_idx = 0  # 记录数据的环境编号
-        if self.render_mode:
-            assert render_dir is not None
+        self.render_mode = render_mode
+        self._render_mode = None
+        self._render_dir = None
+        self.render()
+        if render_mode:
+            _meta = render_mode.split("_")
+            _render_mode = _meta[0]
+            self._render_mode = _render_mode
+            assert _render_mode in self.metadata["render_modes"], (
+                "Unsupported render_mode",
+                render_mode,
+                "execpted head is one of",
+                self.metadata["render_modes"],
+            )
+            assert (
+                render_dir is not None
+            ), "PathLike 'render_dir' must be provided when 'render_mode' is not None"
+            render_dir = Path(render_dir)
             if not render_dir.exists():
                 render_dir.mkdir(parents=True)
-            self.render_dir = render_dir
+            self._render_dir = render_dir
 
             # 计算渲染帧间隔
             self._render_interval_ms = round((1000 / self.metadata["render_fps"]))
@@ -251,13 +286,13 @@ class NavigationEnv(TrueSyncVecEnv):
         # define action space
         self._action_space = spaces.Dict()
         self._action_space["thrust_cmd"] = spaces.Box(
-            low=0, high=1.0, shape=(1,), dtype=np_float
+            low=-1, high=1, shape=(1,), dtype=np_float
         )
         self._action_space["alpha_cmd"] = spaces.Box(
-            low=0, high=1.0, shape=(1,), dtype=np_float
+            low=-1, high=1, shape=(1,), dtype=np_float
         )
         self._action_space["mu_cmd"] = spaces.Box(
-            low=0, high=1.0, shape=(1,), dtype=np_float
+            low=-1, high=1, shape=(1,), dtype=np_float
         )
 
         # deffine reward functions
@@ -295,7 +330,7 @@ class NavigationEnv(TrueSyncVecEnv):
         Vmin = Vmax = 340
         alt0 = self.alt0
         tas = Vmax + _0f
-        self.aircraft = pln = PesudoDOF6(
+        self.aircraft = pln = PDOF6Plane(
             id=0x10086,
             acmi_name="J-10",
             call_sign="agent",
@@ -339,9 +374,9 @@ class NavigationEnv(TrueSyncVecEnv):
             obs_space["ny"] = spaces.Box(
                 low=pln._ny_min, high=pln._ny_max, shape=(1,), dtype=np_float
             )
-        if pln._nz_min != pln._nz_max:
+        if pln._nz_down_max != pln._nz_up_max:
             obs_space["nz"] = spaces.Box(
-                low=pln._nz_min, high=pln._nz_max, shape=(1,), dtype=np_float
+                low=pln._nz_down_max, high=pln._nz_up_max, shape=(1,), dtype=np_float
             )  # 法向过载
 
         obs_space["dmu"] = spaces.Box(
@@ -354,9 +389,7 @@ class NavigationEnv(TrueSyncVecEnv):
         act_space["nx_cmd"] = spaces.Box(low=0, high=1.0, shape=(1,), dtype=np_float)
         act_space["ny_cmd"] = spaces.Box(low=0, high=1.0, shape=(1,), dtype=np_float)
         act_space["nz_cmd"] = spaces.Box(low=0, high=1.0, shape=(1,), dtype=np_float)
-        act_space["dmu_cmd"] = spaces.Box(
-            low=-1.0, high=1.0, shape=(1,), dtype=np_float
-        )
+        act_space["dmu_cmd"] = spaces.Box(low=0, high=1.0, shape=(1,), dtype=np_float)
         self._action_space = act_space
 
         # define reward functions
@@ -423,7 +456,8 @@ class NavigationEnv(TrueSyncVecEnv):
                 self.waypoints_dR_ratio_min / Rmax,
                 self.waypoints_dR_ratio_max / Rmax,
             )
-            dae[..., [0], :] = affcmb(rng.random(size=(nenvs, num, 1)), 0, 2 * np.pi)
+            dae[:, 0, 0] = affcmb(rng.random(size=(nenvs,)), np.pi, 2 * np.pi)
+            dae[:, 0, 1] = affcmb(rng.random(size=(nenvs,)), -np.pi * 0.5, np.pi * 0.5)
             for i in range(1, num):
                 dae[..., i, :] += dae[..., i - 1, :]
             az, el = np.split(dae, 2, axis=-1)
@@ -498,24 +532,25 @@ class NavigationEnv(TrueSyncVecEnv):
 
         # print("navigation points: " , self.navigation_points)
         # print("navigation point index: ", self.navigation_point_index)
-        # 设置飞机角度为正对着导航点
-        selected_points = torch.gather(
-            self.navigation_points, dim=1, index=self.cur_nav_point_index
-        ).squeeze(1)
-        aer = ned2aer(selected_points[env_indices] - pln.position_e(env_indices))
-        # print("aer: ", aer)
-        azimuth = aer[..., 0:1]
-        elevation = aer[..., 1:2]
-        pln.set_gamma(
-            elevation * affcmb(torch.rand_like(azimuth), -2, 2),
-            env_indices,
-        )
-        pln.set_chi(
-            azimuth * affcmb(torch.rand_like(azimuth), -2, 2),
-            env_indices,
-        )
-        pln._ppgt_rpy_ew2Qew(env_indices)
-        pln._propagate(env_indices)
+        if self.easy_gen:
+            # 设置飞机角度为正对着导航点
+            selected_points = torch.gather(
+                self.navigation_points, dim=1, index=self.cur_nav_point_index
+            ).squeeze(1)
+            aer = ned2aer(selected_points[env_indices] - pln.position_e(env_indices))
+            # print("aer: ", aer)
+            azimuth = aer[..., 0:1]
+            elevation = aer[..., 1:2]
+            pln.set_gamma(
+                elevation * affcmb(torch.rand_like(azimuth), -2, 2),
+                env_indices,
+            )
+            pln.set_chi(
+                azimuth * affcmb(torch.rand_like(azimuth), -2, 2),
+                env_indices,
+            )
+            pln._ppgt_rpy_ew2Qew(env_indices)
+            pln._propagate(env_indices)
 
         # reset simulation variables
         self._sim_time_ms[env_indices] = 0
@@ -573,6 +608,8 @@ class NavigationEnv(TrueSyncVecEnv):
         step_num = self.agent_step_size_ms // self.sim_step_size_ms
         pln = self.aircraft  # @step
         idx_rcd = self.render_env_idx  # 选择渲染的环境编号
+
+        action = B01toI(action)
 
         for i in range(step_num):
             self._sim_time_ms[...] += self.sim_step_size_ms
@@ -654,12 +691,13 @@ class NavigationEnv(TrueSyncVecEnv):
         pass
 
     def _render(self):
-        if self.render_mode == "tacview" and self.render_dir:
+        _render_mode = self._render_mode  # @render
+        if _render_mode == "tacview_local" and self._render_dir:
             self.__render_count += 1
             # if self.__render_count % 10 == 0:
             # 对数据按照时间进行排序
             self.__objects_states.sort(key=lambda x: x.sim_time_s)
-            file_path = self.render_dir / "{}.acmi".format(self.__render_count)
+            file_path = self._render_dir / "{}.acmi".format(self.__render_count)
 
             buf = [
                 "FileType=text/acmi/tacview\n",
@@ -691,6 +729,8 @@ class NavigationEnv(TrueSyncVecEnv):
             buf.append("\n")
             with open(file_path, "w") as f:
                 f.writelines(buf)
+        elif _render_mode == "tacview_remote":
+            raise NotImplementedError(f"'{_render_mode}' not implemented yet")
 
     def __get_obs(self, env_indices: _EnvIndexType = None) -> OrderedDict:
         env_indices = self.proc_indices(env_indices)
@@ -729,7 +769,7 @@ class NavigationEnv(TrueSyncVecEnv):
             obs_dict["navigation_points"] = tuple(navigation_points)
         elif version == "2.0":
             self._make_game_v2
-            pln = cast(PesudoDOF6, pln)
+            pln = cast(PDOF6Plane, pln)
             obs_dict["los_b"] = quat_rotate_inv(
                 pln.Q_ew(env_indices), self.cur_nav_LOS[env_indices]
             )
@@ -740,7 +780,7 @@ class NavigationEnv(TrueSyncVecEnv):
                 obs_dict["nx"] = pln._n_w[env_indices, [0]]
             if pln._ny_min != pln._ny_max:
                 obs_dict["ny"] = pln._n_w[env_indices, [1]]
-            if pln._nz_min != pln._nz_max:
+            if pln._nz_down_max != pln._nz_up_max:
                 obs_dict["nz"] = -pln._n_w[env_indices, [2]]
 
             obs_dict["dmu"] = pln._dmu[env_indices, :]

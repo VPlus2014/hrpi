@@ -60,8 +60,10 @@ def main():
         agent_step_size_ms=50,
         sim_step_size_ms=50,
         max_sim_ms=50 * env_max_steps,
-        waypoints_total_num=1,
-        waypoints_visible_num=1,
+        waypoints_total_num=10,
+        waypoints_visible_num=3,
+        waypoints_dR_ratio_min=1e-2,
+        waypoints_dR_ratio_max=2e-2,
         position_min_limit=[-radius, -radius, -radius],
         position_max_limit=[radius, radius, radius],
         render_mode="tacview",
@@ -70,7 +72,7 @@ def main():
         device=env_device,
         dtype=th_float,
         out_torch=env_out_torch,
-        logconfig=log_ext.LogConfig(
+        logname=log_ext.LogConfig(
             f"{envcls.__name__}",
             level=logging.DEBUG,
             file_path=str(TASK_DIR / "env.log"),
@@ -98,9 +100,9 @@ def main():
         learn_batch_size=batch_size,
         mini_batch_size=max(int(batch_size // 8), 1) * 2,
         lr_a=5e-3,
-        actor_hidden_sizes=[128, 128],
+        actor_hidden_sizes=[128, 128, 128],
         lr_c=5e-3,
-        critic_hidden_sizes=[128, 128],
+        critic_hidden_sizes=[128, 128, 128],
         gamma=0.99,
         gae_lambda=0.95,
         epsilon=0.2,
@@ -119,7 +121,7 @@ def main():
             f"{algoname}_agent",
             level=logging.DEBUG,
             file_path=str(TASK_DIR / "agent.log"),
-        ).make(),
+        ).remake(),
     )
 
     if isinstance(pretrn_dir, Path):

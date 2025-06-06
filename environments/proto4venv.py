@@ -10,6 +10,7 @@ from gymnasium.vector.async_vector_env import AsyncVectorEnv
 _EnvIndexType = Union[torch.Tensor, Sequence[int], slice, None]
 
 # from gymnasium.vector.sync_vector_env import SyncVectorEnv
+_DeviceLikeType = Union[torch.device, str, int]
 
 
 class TrueSyncVecEnv(gymnasium.Env):
@@ -24,9 +25,9 @@ class TrueSyncVecEnv(gymnasium.Env):
     def __init__(
         self,
         num_envs: int,
-        device: torch.device,
+        device: _DeviceLikeType,
         dtype: torch.dtype,
-        **kwargs,
+        **kwargs, # TODO: 待定
     ):
         """
         张量化环境\
@@ -38,9 +39,12 @@ class TrueSyncVecEnv(gymnasium.Env):
         assert dtype in (
             torch.float32,
             torch.float64,
-        ), f"unsupported env float dtype {dtype}"
-        self._num_envs = num_envs
+        ), (
+            f"unsupported torch float dtype {dtype}",
+            "only float32 and float64 are supported",
+        )
         assert num_envs > 0, f"num_envs must be positive, got {num_envs}"
+        self._num_envs = num_envs
 
         self._sim_time_ms = torch.zeros(
             (num_envs, 1), device=device, dtype=torch.int64

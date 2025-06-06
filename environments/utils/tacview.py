@@ -1,4 +1,4 @@
-# 250603 taview 可视化扩展
+# 250606 taview 可视化扩展
 from __future__ import annotations
 from datetime import datetime
 from enum import Enum
@@ -153,13 +153,16 @@ def acmi_timestamp(sec: float) -> str:
 
 
 def acmi_id(id: int | str) -> str:
-    """格式化为16进制大写 Tacview Object ID"""
+    r"""
+    格式化为16进制大写 Tacview Object ID\
+    注意, 0x/0 开头会导致 Tacview 解析失败
+    """
     if isinstance(id, str):
         try:
             id = int(id, 16)
         except ValueError as e:
             raise ValueError(f"invalid id: {id}") from e
-    id_hex = hex(id)[2:].upper()
+    id_hex = "{:X}".format(id)
     return id_hex
 
 
@@ -170,7 +173,7 @@ def acmi_destroy(id: str):
 
 
 def acmi_remove(id: str):
-    """删除对象指令"""
+    """删除对象"""
     msg = f"-{id}"
     return msg
 
@@ -193,6 +196,8 @@ def unit2acmi(
     CallSign: "str|None" = None,
     TAS: "float|None" = None,  # 真空速
     Speed: "float|None" = None,  # 航速
+    Parent: "str|None" = None,  # 父对象 ID
+    Next: "str|None" = None,  # 下一个导航点 ID
     **etc: str,  # 其他元数据
 ) -> str:
     """
@@ -212,7 +217,10 @@ def unit2acmi(
         CallSign (Optional[str], optional): 呼号. Defaults to None.
         TAS (Optional[float], optional): 真空速, knots. Defaults to None.
         Speed (Optional[float], optional): 航速, knots. Defaults to None.
-        **etc (str): 其他元数据, 格式为 key=value, 多个元数据以逗号分隔.
+        Parent (Optional[str], optional): 父对象 ID. Defaults to None.
+        Next (Optional[str], optional): 下一个导航点 ID. Defaults to None.
+        **etc (str): 其他元数据, 格式为 key=value, 多个元数据以逗号分隔, 
+            参见 "Text Properties"@ https://www.tacview.net/documentation/acmi/en/ .
     """
     lbh_str = "{:.07f}|{:.07f}|{:.02f}".format(float(lon), float(lat), float(alt))
     pose_ = [lbh_str]
@@ -232,6 +240,8 @@ def unit2acmi(
         ("CallSign", CallSign),
         ("TAS", TAS),
         ("Speed", Speed),
+        ("Parent", Parent),
+        ("Next", Next),
     ]
     _meta.extend(etc.items())
     for k, v in _meta:
@@ -265,6 +275,7 @@ class TacviewRecorder:
         self.format_time = acmi_timestamp
         self.event_destroy = acmi_destroy
         self.event_bookmark = acmi_bookmark
+        self.event_remove = acmi_remove
 
     def reset_local(
         self,
@@ -294,7 +305,7 @@ class TacviewRecorder:
         timeout: float = 5.0,
         reference_time: "datetime|None" = None,
         encoding=_RT_ENCODING,
-        reuse_server=True,
+        reuse_server=False,
     ):
         logr = self._logr
         suc = False

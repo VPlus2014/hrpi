@@ -16,7 +16,7 @@ from pathlib import Path
 from .models.aircraft import BaseAircraft, PointMassAircraft
 from .models.missile import BaseMissile, PointMassMissile
 from .utils.space import space2box, flatten, unflatten
-from .utils.math import (
+from .utils.math_torch import (
     quat_enu_ned,
     quat_rotate,
     quat_rotate_inv,

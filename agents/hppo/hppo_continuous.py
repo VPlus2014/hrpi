@@ -13,7 +13,7 @@ if TYPE_CHECKING:
     from torch.utils.tensorboard import SummaryWriter
 from functools import cached_property
 from environments.utils.space import get_spaces_shape, space2box, flatten, unflatten
-from environments.utils.math import (
+from environments.utils.math_torch import (
     Qx,
     Qy,
     Qz,
@@ -23,7 +23,7 @@ from environments.utils.math import (
     lerp,
     nlerp,
     herp,
-    aer2xyz,
+    aer2ned,
 )
 from ..modules import GaussianActor, Critic
 from ..agent import Agent
