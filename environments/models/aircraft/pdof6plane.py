@@ -114,6 +114,18 @@ class PDOF6Plane(BaseAircraft):
         # 当前控制量
         self._n_w = torch.zeros((bsz, 3), device=device, dtype=dtype)
         self._dmu = torch.zeros((bsz, 1), device=device, dtype=dtype)
+    
+    def set_ic_tas(self, tas: torch.Tensor | float):
+        """设置初始真空速"""
+        self._ic_tas.copy_(tas + self._0f)
+
+    def set_ic_rpy_ew(self, rpy_ew: torch.Tensor | float):
+        """设置初始速度系姿态欧拉角"""
+        self._ic_rpy_ew.copy_(rpy_ew + self._0f)
+    
+    def set_ic_pos_e(self, position_e: torch.Tensor | float):
+        """设置初始位置地轴系坐标"""
+        self._ic_pos_e.copy_(position_e + self._0f)
 
     def reset(
         self,

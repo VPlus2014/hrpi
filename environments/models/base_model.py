@@ -4,6 +4,7 @@ from typing import TYPE_CHECKING
 import os
 import logging
 import numpy as np
+import pymap3d
 import torch
 from abc import ABC, abstractmethod
 from typing import Literal, Sequence, Union
@@ -192,7 +193,7 @@ class BaseModel(ABC):
             # self._lon.copy_(self._lon0)
             # self._alt.copy_(self._alt0)
             # pos_e->(lat, lon, alt)
-            self._ppgt_z2alt()
+            self._ppgt_ned2blh()
 
         self._use_mass = use_mass
         if use_mass:
@@ -208,10 +209,15 @@ class BaseModel(ABC):
         self._is_reset = False
 
         self.acmi_color = np.empty((batch_size,), dtype=object)
+        """Tacview 颜色, shape: (B,)"""
         self.acmi_name = np.empty((batch_size,), dtype=object)
+        """Tacview 模型名称, shape: (B,)"""
         self.acmi_type = np.empty((batch_size,), dtype=object)
+        """Tacview 对象类型, shape: (B,)"""
         self.acmi_parent = np.empty((batch_size,), dtype=object)
+        """Tacview 父对象 ID, shape: (B,)"""
         self.call_sign = np.empty((batch_size,), dtype=object)
+        """Tacview 呼号, shape: (B,)"""
         for i in range(batch_size):
             self.acmi_color[i] = acmi_color
             self.acmi_name[i] = acmi_name
@@ -290,7 +296,7 @@ class BaseModel(ABC):
     def altitude_m(self, batch_index: _SupportedIndexType = None) -> torch.Tensor:
         """海拔 altitude, unit: m, shape: (B, 1)"""
         batch_index = self.proc_batch_index(batch_index)
-        return self._blh0[batch_index, 2:3] - self._pos_e[batch_index, 2:3]
+        return self._blh[batch_index, 2:3]
 
     def g_e(self, batch_index: _SupportedIndexType = None) -> torch.Tensor:
         """NED地轴系重力加速度向量"""
@@ -414,12 +420,18 @@ class BaseModel(ABC):
         """高度->海拔"""
         batch_index = self.proc_batch_index(batch_index)
         self._blh[batch_index, 2:3] = (
-            self._blh[batch_index, 2:3] - self._pos_e[batch_index, 2:3]
+            self._blh0[batch_index, 2:3] - self._pos_e[batch_index, 2:3]
         )
 
-    def _ppgt_pos_e2blh(self, batch_index: _SupportedIndexType = None):
+    def _ppgt_ned2blh(self, batch_index: _SupportedIndexType = None):
         """NED地轴系坐标->纬经高"""
-        raise NotImplementedError
+        index = self.proc_batch_index(batch_index)
+        p_np = self._pos_e[index, :].cpu().numpy()
+        n, e, d = np.split(p_np, 3, axis=-1)
+        lat0, lon0, alt0 = np.split(self._blh0[index, :].cpu().numpy(), 3, axis=-1)
+        lat, lon, alt = pymap3d.ned2geodetic(n, e, d, lat0, lon0, alt0)
+        blh = np.concatenate([lat, lon, alt], axis=-1)
+        self._blh[index, :] = torch.asarray(blh, device=self.device, dtype=self.dtype)
 
     def _ppgt_rpy_eb2Qeb(self, batch_index: _SupportedIndexType = None):
         """地轴/体轴 欧拉角->四元数"""

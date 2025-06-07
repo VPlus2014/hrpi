@@ -72,7 +72,7 @@ def affcmb_inv(y, a, b):
     _mis0 = _mis0 + 0.0
     # assert _mis0.any() == False
     # w = _where(_mis0, 0, y_ / (m + _mis0))
-    w = (y_ * _mis0) / (m + _mis0)
+    w = (y_ * (1 - _mis0)) / (m + _mis0)
     return w
 
 
@@ -1154,40 +1154,50 @@ def calc_zem(
     $$
 
     Args:
-        p1: shape=(n|1,d) 群体1的初始位置(t=0)
-        v1: shape=(n|1,d) 群体1的速度
-        p2: shape=(m|1,d) 群体2的初始位置(t=0)
-        v2: shape=(m|1,d) 群体2的速度
+        p1: shape=(...,n|1,d) 群体1的初始位置(t=0)
+        v1: shape=(...,n|1,d) 群体1的速度
+        p2: shape=(...,m|1,d) 群体2的初始位置(t=0)
+        v2: shape=(...,m|1,d) 群体2的速度
         tmin: 最小时间, 默认为0
         tmax: 最大时间, 默认为\infty$
     Returns:
-        MD: 脱靶量 shape=(n,m,1)\
+        MD: 脱靶量 shape=(...,n,m,1)\
                 $MD[i,j]:=min_{t\in T} d(t)$\
 
-        t_miss: 脱靶时间 shape=(n,m,1)\
+        t_miss: 脱靶时间 shape=(...,n,m,1)\
                 $t_{miss}[i,j]:=\min\argmin_{t\in T} d(t)$\
     """
-    assert len(p1.shape) == 2, "p1 must be 2-dimensional."
-    assert len(v1.shape) == 2, "v1 must be 2-dimensional."
-    assert len(p2.shape) == 2, "p2 must be 2-dimensional."
-    assert len(v2.shape) == 2, "v2 must be 2-dimensional."
-    p1, v1 = _broadcast_arrays(p1, v1)  # (n,d|1)
-    n = p1.shape[0]
-    p2, v2 = _broadcast_arrays(p2, v2)  # (m,d|1)
-    m = p2.shape[0]
-    p1 = _reshape(p1, (n, 1, -1))  # (n,1,d|1)
-    v1 = _reshape(v1, (n, 1, -1))  # (n,1,d|1)
-    p2 = _reshape(p2, (1, m, -1))  # (1,m,d|1)
-    v2 = _reshape(v2, (1, m, -1))  # (1,m,d|1)
-    dp = p1 - p2  # (n,m,d)
-    dv = v1 - v2  # (n,m,d)
-    pv = (dp * dv).sum(-1, True)  # (n,m,1)
-    vv = (dv * dv).sum(-1, True)  # (n,m,1)
+    assert len(p1.shape) == len(v1.shape) == len(p2.shape) == len(v2.shape), (
+        "p1,v1,p2,v2 must have the same broadcastable shape[:-2].",
+        p1.shape,
+        v1.shape,
+        p2.shape,
+        v2.shape,
+    )
+    p1, v1 = _broadcast_arrays(p1, v1)  # (...,n,d)
+    n = p1.shape[-2]
+    p2, v2 = _broadcast_arrays(p2, v2)  # (...,m,d)
+    assert p1.shape[-1] == p2.shape[-1], (
+        "p1&v1 and p2&v2 must have the same dim[-1]",
+        p1.shape,
+        p2.shape,
+    )
+    m = p2.shape[-2]
+    p1 = _bkbn.unsqueeze(p1, -2)  # (...,n,1,d|1)
+    v1 = _bkbn.unsqueeze(v1, -2)  # (...,n,1,d|1)
+    p2 = _bkbn.unsqueeze(p2, -3)  # (...,1,m,d|1)
+    v2 = _bkbn.unsqueeze(v2, -3)  # (...,1,m,d|1)
+    dp = p1 - p2  # (...,n,m,d)
+    dv = v1 - v2  # (...,n,m,d)
+    pv = (dp * dv).sum(-1, keepdim=True)  # (...,n,m,1)
+    vv = (dv * dv).sum(-1, keepdim=True)  # (...,n,m,1)
     _zeroV = vv <= 1e-6  # 过零处理
-    _0 = _zeros_like(vv)
-    t_miss = _where(_zeroV, _0, -pv / (vv + _zeroV))  # (n,m,1)
+    _0f = _zeros_like(pv)  # (...,n,m,1)
+    t_miss = _where(_zeroV, _0f, -pv / (vv + _zeroV))  # (...,n,m,1)
+    if not _bkbn.isfinite(t_miss).all():
+        t_miss
     t_miss = _clip(t_miss, tmin, tmax)  # 投影时间
-    md = _norm(dp + dv * t_miss, 2, -1, True)  # (n,m,1)
+    md = _norm(dp + dv * t_miss, dim=-1, keepdim=True)  # (...,n,m,1)
     return md, t_miss
 
 

@@ -31,7 +31,7 @@ class PDOF6Missile(BaseMissile):
 
     def __init__(
         self,
-        nyz_max: float = 30,
+        nyz_max: float = 40,
         Vmin: float = 100,
         Vmax: float = 1000,
         det_rmax: float = 50e3,
@@ -74,7 +74,7 @@ class PDOF6Missile(BaseMissile):
         self._m0 = 84  # initial mass, unit: kg
         self._dm = 6.0  # mass loss rate, unit: kg/s
         self._T = 7063.2  # thrust, unit: N
-        self._N = 3.0  # proportionality constant of proportional navigation
+        self._N = 10.0  # proportionality constant of proportional navigation
         self._nyz_max = nyz_max  # max overload
         self._t_thrust_s = 10  # time limitation of engine, unit: s
         assert self._m0 > self._t_thrust_s * self._dm, (
@@ -86,7 +86,7 @@ class PDOF6Missile(BaseMissile):
         self._Vmin = Vmin
         self._Vmax = Vmax
         self._dmu_max = math.radians(360 / 1)
-        self._dmu_tau = 1e-2
+        self._dmu_K = 3.0
         assert det_rmax > 0, ("det_max should be positive", det_rmax)
         self._det_rmax = det_rmax
         self._det_fov_deg = det_fov_deg
@@ -95,19 +95,20 @@ class PDOF6Missile(BaseMissile):
             det_fov_deg,
         )
         self._det_halfa = math.radians(det_fov_deg * 0.5)
-        self._det_cosa = math.radians(self._det_halfa)
+        self._det_cosa = math.cos(self._det_halfa)
         assert trk_fov_deg > 0 and trk_fov_deg <= det_fov_deg, (
             "trk_fov_deg should be (0,det_fov_deg],got",
             trk_fov_deg,
         )
         self._trk_halfa = math.radians(trk_fov_deg * 0.5)
-        self._trk_cosa = math.radians(self._trk_halfa)
+        self._trk_cosa = math.cos(self._trk_halfa)
 
         _0f = self._0f
         _shape = [self.batch_size]
 
         self._ic_tas = torch.empty(_shape + [1], device=device, dtype=dtype)
         self._ic_rpy_ew = torch.empty(_shape + [3], device=device, dtype=dtype)
+        self._ic_pos_e = torch.empty(_shape + [3], device=device, dtype=dtype)
 
         # 状态
         # self._mass = torch.empty_like(_0f)
@@ -115,6 +116,7 @@ class PDOF6Missile(BaseMissile):
         self._fake_vel_e = torch.empty(_shape + [3], device=device, dtype=dtype)
         # 控制量
         self._n_w = torch.zeros(_shape + [3], device=device, dtype=dtype)
+        self._dmu = torch.zeros(_shape + [1], device=device, dtype=dtype)
 
     def set_ic_tas(
         self, value: torch.Tensor | float, dst_index: _SupportedIndexType = None
@@ -132,6 +134,15 @@ class PDOF6Missile(BaseMissile):
             self._ic_rpy_ew[dst_index, :]
         )
 
+    def set_ic_pos_e(
+        self, value: torch.Tensor | float, dst_index: _SupportedIndexType = None
+    ):
+        """设置初始位置"""
+        dst_index = self.proc_batch_index(dst_index)
+        self._ic_pos_e[dst_index, :] = value + torch.zeros_like(
+            self._ic_pos_e[dst_index]
+        )
+
     def reset(self, env_indices: _SupportedIndexType = None):
         env_indices = self.proc_batch_index(env_indices)
         super().reset(env_indices)
@@ -141,7 +152,12 @@ class PDOF6Missile(BaseMissile):
 
         self._rpy_ew[env_indices, :] = self._ic_rpy_ew[env_indices, :]
         self._ppgt_rpy_ew2Qew(env_indices)
+
+        self._pos_e[env_indices, :] = self._ic_pos_e[env_indices, :]
+
         self._propagate(env_indices)
+
+        self._ppgt_ned2blh(env_indices)
 
     def launch(self, env_indices: _SupportedIndexType = None):
         env_indices = self.proc_batch_index(env_indices)
@@ -302,6 +318,7 @@ class PDOF6Missile(BaseMissile):
         if auto_control:
             nyz = self.png(self._tgt_pos, self._tgt_vel)  # (B,2)
             self._n_w[..., 1:3] = nyz
+            self._dmu[..., :] = self._dmu_K * self.mu()
         return
 
     def detected_target_num(self, index: _SupportedIndexType = None) -> torch.Tensor:
@@ -332,6 +349,37 @@ class PDOF6Missile(BaseMissile):
             self._m0
             - torch.clip(self.sim_time_s(index), max=self._t_thrust_s) * self._dm
         )
+
+    def set_action(
+        self,
+        value: torch.Tensor | np.ndarray,
+    ):
+        """
+        设置控制量
+
+        Args:
+            value (torch.Tensor): 控制量, shape: (B,2)
+                ny_cmd 侧向过载, unit: G
+                nz_cmd 法向过载系数(NED -Z 为正), unit: G
+        """
+        logr = self.logr
+        if not isinstance(value, torch.Tensor):
+            value = torch.tensor(value, dtype=self.dtype, device=self.device)
+        ny_cmd, nz_cmd, dmu_cmd = torch.split(value, [1, 1, 1], -1)
+        self._n_w[..., 1:2] = ny_cmd * self._nyz_max
+        self._n_w[..., 2:3] = nz_cmd * self._nyz_max
+        self._dmu[..., :] = dmu_cmd * self._dmu_max
+        if _DEBUG:
+            logr.debug(
+                (
+                    "ny_cmd:{:.3g}".format(ny_cmd[0].item()),
+                    "nz_cmd:{:.3g}".format(nz_cmd[0].item()),
+                    "dmu_cmd:{:.3g}".format(dmu_cmd[0].item()),
+                    "ny:{:.3g}".format(self._n_w[0, 1].item()),
+                    "nz:{:.3g}".format(self._n_w[0, 2].item()),
+                    "dmu:{:.3g}".format(self.mu(0).item()),
+                )
+            )
 
     def _propagate(self, index: _SupportedIndexType = None):
         """(reset&step 复用)运动学关键状态(TAS,Qew,mu)->全体缓存状态"""
@@ -374,7 +422,6 @@ class PDOF6Missile(BaseMissile):
             Qew_next (torch.Tensor): 地轴/风轴四元数, shape: (B,4)
         """
         use_gravity = self.use_gravity  # 考虑重力
-        use_overloading = True  # 输出过载
         ode_solver = ode_rk23
         logr = self.logr
 
@@ -385,10 +432,10 @@ class PDOF6Missile(BaseMissile):
 
         if _DEBUG:
             logr.debug(
-                {
-                    "ny_cmd": ny[0].item(),
-                    "nz_cmd": nz[0].item(),
-                }
+                (
+                    "ny_cmd:{:.3g}".format(ny[0].item()),
+                    "nz_cmd:{:.3g}".format(nz[0].item()),
+                )
             )
 
         def _f(
@@ -405,7 +452,7 @@ class PDOF6Missile(BaseMissile):
             T = (_0f + self._T) * mask
 
             D = self._D(tas, ny, nz)  # (...,1)
-            nx = (T - D) / mass + _0f
+            nx = (T - D) / (mass * self._g)  # (...,1)
             n_w = torch.cat([nx, ny, nz], -1)
 
             a_w = g * n_w  # 过载加速度风轴分量
@@ -414,7 +461,7 @@ class PDOF6Missile(BaseMissile):
                 a_w += quat_rotate(Qwe, self.g_e())
 
             # 旋转角速度
-            dot_mu = -mu / self._dmu_tau
+            dot_mu = self._dmu
             tas = torch.clip(tas, self._Vmin, self._Vmax)  # 防止过零
             Vinv = 1 / tas
             dot_tas, a_vy, a_vz = torch.split(a_w, [1, 1, 1], dim=-1)
@@ -425,12 +472,16 @@ class PDOF6Missile(BaseMissile):
 
             if _DEBUG:
                 logr.debug(
-                    {
-                        "t": t[0].item(),
-                        "nx": nx[0].item(),
-                        "D": D[0].item(),
-                        "T": T[0].item(),
-                    }
+                    (
+                        "obj:{}".format(self.__class__.__name__),
+                        "id:{}".format(self.id[0,].item()),
+                        "t: {:.3f}".format(t[0].item()),
+                        "nx:{:.3g}".format(nx[0].item()),
+                        "ny:{:.3g}".format(ny[0].item()),
+                        "nz:{:.3g}".format(nz[0].item()),
+                        "D:{:.3g}".format(D[0].item()),
+                        "T:{:.3g}".format(T[0].item()),
+                    )
                 )
 
             dotX = [dot_p_e, dot_tas, dot_Qew, dot_mu]
@@ -443,13 +494,13 @@ class PDOF6Missile(BaseMissile):
         if _DEBUG:
             logr.debug(
                 {
-                    "obj": self.__class__.__name__,
-                    "id": self.id[0].item(),
-                    "tas": tas[0].item(),
-                    "|Qew|": Qew_next[0].norm().item(),
-                    "mu": mu_next[0].item(),
-                    "pos_e": pos_e_next[0].cpu().tolist(),
-                    "vel_e": tas_next[0].cpu().tolist(),
+                    "obj:{}".format(self.__class__.__name__),
+                    "id:{}".format(self.id[0].item()),
+                    "tas:{:.3g}".format(tas[0].item()),
+                    "|Qw|:{:.3g}".format(Qew_next[0].norm().item()),
+                    "mu:{:.3g}".format(mu_next[0].item()),
+                    "pos_e:{}".format(pos_e_next[0].cpu().tolist()),
+                    "vel_e:{}".format(tas_next[0].cpu().tolist()),
                 }
             )
         return pos_e_next, tas_next, Qew_next, mu_next
@@ -462,18 +513,17 @@ class PDOF6Missile(BaseMissile):
         """目标信息->需求控制量"""
         assert target_position_e.shape == (self.batch_size, 3)
         assert target_velocity_e.shape == (self.batch_size, 3)
+        ego_v = self.velocity_e()  # (B,3)
         dp = target_position_e - self.position_e()  # LOS (B,3)
-        dv = target_velocity_e - self.velocity_e()  # relative velocity (B,3)
-        dem = torch.norm(dp, dim=-1, keepdim=True).clip(min=1e-3)
-        omega = torch.cross(dp, dv, dim=-1) / dem
+        dv = target_velocity_e - ego_v  # relative velocity (B,3)
+        rr = (dp * dp).sum(-1, keepdim=True).clip(1e-3)
+        omega = torch.cross(dp, dv, dim=-1) / rr
         ad_e = self._N * torch.cross(
-            dv, omega, dim=-1
+            omega, ego_v, dim=-1
         )  # required acceleration in earth frame (...,3)
         ad_b = quat_rotate_inv(self.Q_ew(), ad_e)
         nyz_d = ad_b[..., 1:] / self._g
-        nyz_d = torch.clip(
-            nyz_d,
-            min=-self._nyz_max,
-            max=self._nyz_max,
-        )  # 过载限制 (...,2)
+        if self.use_gravity:
+            nyz_d[..., 1:] -= self._1f
+        nyz_d = torch.clip(nyz_d, -self._nyz_max, self._nyz_max)  # 过载限制 (...,2)
         return nyz_d

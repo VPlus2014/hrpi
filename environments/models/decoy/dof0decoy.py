@@ -74,14 +74,26 @@ class DOF0BallDecoy(BaseDecoy):
         self._propagate()
 
     def _propagate(self, index: _SupportedIndexType = None):
+        logr = self.logr
         index = self.proc_batch_index(index)
         is_alive = self.is_alive(index)
         is_timeout = self.sim_time_s(index) >= self._effect_duration
+
+        is_new_timeout = is_alive & is_timeout
         self.status[index] = torch.where(
-            is_alive & is_timeout,
+            is_new_timeout,
             self.STATUS_DYING,
             self.status[index],
         )
+        if _DEBUG:
+            if is_new_timeout[0].item():
+                logr.debug(
+                    (
+                        "obj: {}".format(self.__class__.__name__),
+                        "status: {}".format(self.status[0].item()),
+                        "new_timeout: {}".format(is_new_timeout[0].item()),
+                    )
+                )
         self._ppgt_Ve2tas(index)
         return
 

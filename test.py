@@ -1,4 +1,4 @@
-import itertools 
+import itertools
 import random
 from timeit import timeit
 import gymnasium as gym
@@ -6,7 +6,7 @@ from pathlib import Path
 import numpy as np
 
 # import torch
-from torch.utils.tensorboard.writer import SummaryWriter
+# from torch.utils.tensorboard.writer import SummaryWriter
 import torch
 from numpy.typing import NDArray
 
@@ -23,17 +23,17 @@ _norm = np.linalg.norm
 
 def main():
     n = 2
-    m = 2
     dimX = 3
-    data = torch.randn((n, m, dimX))
+    x = np.random.randn(n, dimX)
+    for i in range(3):
+        y = np.expand_dims(x,-i)
+        print(x.shape, y.shape,i)
 
-    colors1 = np.asarray([f"Red{i}" for i in range(n)]).reshape(n, 1)
-    colors2 = np.asarray([f"Red{2-i}" for i in range(m)]).reshape(1, m)
-    tag = colors1 == colors2
-    sig = [(c1, c2) for c1, c2 in itertools.product(colors1.ravel(), colors2.ravel())]
-
-    print(tag)
-    print(sig)
+    p_np = x
+    n,e,d = np.split(p_np, 3, axis=-1)
+    print(n.shape, e.shape, d.shape)
+    print(x)
+    print(np.concatenate([n, e, d], axis=-1))
     return
 
     def data_gen():
