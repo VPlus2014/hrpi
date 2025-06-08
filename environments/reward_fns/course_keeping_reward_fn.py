@@ -3,7 +3,7 @@ from typing import TYPE_CHECKING
 
 import torch
 import math
-from ..utils.math_torch import euler_from_quat, delta_rad_reg
+from ..utils.math_pt import euler_from_quat, delta_rad_reg
 from .base_reward_fn import BaseRewardFn
 
 

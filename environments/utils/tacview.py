@@ -1,4 +1,4 @@
-# 250606 taview 可视化扩展
+# 250608 taview 可视化扩展
 from __future__ import annotations
 from datetime import datetime
 from enum import Enum
@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import socket
 import traceback
+from typing import Any
 
 
 class Tag_Class(Enum):
@@ -187,18 +188,18 @@ def unit2acmi(
     lat: float,  # deg
     lon: float,  # deg
     alt: float,  # m
-    roll: "float|None" = None,  # deg
-    pitch: "float|None" = None,  # deg
-    yaw: "float|None" = None,  # deg
-    Name: "str|None" = None,
-    Color: "str|None" = None,
-    Type: "str|None" = None,
-    CallSign: "str|None" = None,
-    TAS: "float|None" = None,  # 真空速
-    Speed: "float|None" = None,  # 航速
-    Parent: "str|None" = None,  # 父对象 ID
-    Next: "str|None" = None,  # 下一个导航点 ID
-    **etc: str,  # 其他元数据
+    roll: float|Any = None,  # deg
+    pitch: float|Any = None,  # deg
+    yaw: float|Any = None,  # deg
+    Name: str|Any = None,
+    Color: str|Any = None,
+    Type: str|Any = None,
+    CallSign: str|Any = None,
+    TAS: float|str|Any = None,  # 真空速
+    Speed: float|str|Any = None,  # 航速
+    Parent: str|Any = None,  # 父对象 ID
+    Next: str|Any = None,  # 下一个导航点 ID
+    **etc: str|Any,  # 其他元数据
 ) -> str:
     """
     格式化对象信息
@@ -219,7 +220,7 @@ def unit2acmi(
         Speed (Optional[float], optional): 航速, knots. Defaults to None.
         Parent (Optional[str], optional): 父对象 ID. Defaults to None.
         Next (Optional[str], optional): 下一个导航点 ID. Defaults to None.
-        **etc (str): 其他元数据, 格式为 key=value, 多个元数据以逗号分隔, 
+        **etc (str): 其他元数据, 格式为 key=value, 多个元数据以逗号分隔,
             参见 "Text Properties"@ https://www.tacview.net/documentation/acmi/en/ .
     """
     lbh_str = "{:.07f}|{:.07f}|{:.02f}".format(float(lon), float(lat), float(alt))
@@ -316,7 +317,7 @@ class TacviewRecorder:
 
         ip, port = addr
         if self._srvr_sock:
-            self.close()  # 在 bind 前需要关闭
+            self.close()  # 在 bind 前需要关闭已有连接
         reuse_server = reuse_server and self._srvr_sock
         clnt_sock = None
         if reuse_server:
@@ -324,7 +325,7 @@ class TacviewRecorder:
         else:
             srvr_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             srvr_sock.bind(addr)
-            srvr_sock.listen(2)  # 最多排队的 clients 连接数
+            srvr_sock.listen(1)  # 最多排队的 clients 连接数
             logr.debug(f"Server listening on {ip}:{port}, timeout={timeout}s")
         assert srvr_sock
         srvr_sock.settimeout(timeout)  # timeout for connection
@@ -347,8 +348,8 @@ class TacviewRecorder:
             # [2]握手(只需按协议发送消息即可)
             head_com = "XtraLib.Stream.0\n" "Tacview.RealTimeTelemetry.0\n"  # 协议头
             head_clnt = head_com + f"Client username\npassword_hash\0"
+            msg1 = head_clnt.encode(encoding)
             try:
-                msg1 = head_clnt.encode(encoding)
                 clnt_sock.send(msg1)
                 logr.debug(f"sent handshake data:\n{len(msg1)},{msg1}")
                 data = clnt_sock.recv(2048)
@@ -361,6 +362,8 @@ class TacviewRecorder:
                 logr.debug("handshake done")
             except socket.timeout as e:
                 logr.warning("handshake timeout")
+                clnt_sock.close()
+                clnt_sock = None
                 suc = False
 
         if clnt_sock:

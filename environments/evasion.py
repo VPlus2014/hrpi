@@ -13,10 +13,10 @@ from gymnasium import spaces
 from collections import OrderedDict
 from pathlib import Path
 
-from .models.aircraft import BaseAircraft, PointMassAircraft
-from .models.missile import BaseMissile, PointMassMissile
+from .simulators.aircraft import BaseAircraft, PointMassAircraft
+from .simulators.missile import BaseMissile, PointMassMissile
 from .utils.space import space2box, flatten, unflatten
-from .utils.math_torch import (
+from .utils.math_pt import (
     quat_enu_ned,
     quat_rotate,
     quat_rotate_inv,
@@ -200,7 +200,6 @@ class EvasionEnv(gymnasium.Env):
         if self._out_as_np:
             data = data.cpu().numpy()
         return data
-
 
     def reset(self, env_indices: Sequence[int] | torch.Tensor | None = None):
         env_indices = self.proc_indices(env_indices)

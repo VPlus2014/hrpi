@@ -8,7 +8,7 @@ from numpy.linalg import norm
 from numpy.typing import NDArray
 
 
-def _setup():
+def _setup():  # 确保项目根节点在 sys.path 中
     import sys
     from pathlib import Path
 
@@ -23,10 +23,6 @@ ROOT = _setup()
 
 from enum import Enum
 import torch
-from environments.utils import log_ext
-from environments.models.base_model import BaseModel
-from environments.models.aircraft import PDOF6Plane as Plane
-from environments.utils.tacview import TacviewRecorder, ACMI_Types, acmi_id
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime
@@ -39,15 +35,19 @@ from typing import Callable, Dict, List, Sequence, Tuple, Union, cast
 import numpy as np
 import torch
 from pynput import keyboard
+from environments.simulators.decoy.base_decoy import BaseDecoy
+from environments.simulators.base_model import BaseModel
+from environments.simulators.missile import BaseMissile
+from environments.utils.tacview import TacviewRecorder, ACMI_Types, acmi_id
 from environments.utils.math_np import calc_zem, rpy2mat
-from environments.models.aircraft.pdof6plane import PDOF6Plane as Plane, BaseAircraft
-from environments.models.missile.pdof6missile import (
+from environments.utils import math_pt as math_pt
+from environments.simulators.aircraft.pdof6plane import PDOF6Plane as Plane
+from environments.simulators.missile.pdof6missile import (
     PDOF6Missile as Missile,
-    BaseMissile,
 )
-from environments.models.base_model import BaseModel
-from environments.models.decoy.base_decoy import BaseDecoy
-from environments.models.decoy.dof0decoy import DOF0BallDecoy as Decoy
+from environments.simulators.base_model import BaseModel
+from environments.simulators.decoy.dof0decoy import DOF0BallDecoy as Decoy
+from environments.utils import log_ext
 from environments.utils.time_ext import Timer_Pulse
 
 ACT_IDX_NX = 0
@@ -142,7 +142,7 @@ HOTKEY_RESET = _Keymap("r")
 # 空格暂停播放(只是Tacview本身暂停，但是不能同步到本程序,仿真可能依然推进)
 
 
-def los_is_blocked(los: np.ndarray, rthres: np.ndarray):
+def los_is_blocked_np(los: np.ndarray, rthres: np.ndarray):
     """
     只能判断被一个球完全阻挡,不能判断被开覆盖阻挡
     Args:
@@ -244,7 +244,7 @@ def missile_filt_units(
     los = los.reshape(-1, d)  # (n*m,3)
     br = targ_radius.reshape(-1, 1)  # (n*m,1)
 
-    valid = ~los_is_blocked(los, br)  # (...,n*m,1)
+    valid = ~los_is_blocked_np(los, br)  # (...,n*m,1)
     valid = valid.reshape(n, m)
     return valid
 
@@ -252,10 +252,10 @@ def missile_filt_units(
 def reuse_index(
     group: BaseModel,
 ):
-    tag = ~group.is_alive()  # (B,1)
+    tag = group.is_ready().view(-1, 1)  # (B,1)
     if tag.any():
         idxs = torch.where(tag)[0]  # (b,)
-        index = int(idxs[0].item())
+        index = int(np.random.choice(idxs.cpu().numpy()))
         return index
     else:
         return -1
@@ -265,11 +265,11 @@ def arrange_id(
     group: BaseModel,
 ):
     for i in range(1, group.batch_size):
-        group.id[i, 0] = group.id[i - 1, 0] + 1
+        group.acmi_id[i, 0] = group.acmi_id[i - 1, 0] + 1
 
 
-def missile_reuse(
-    group: Missile,
+def missile_regen(
+    grp: Missile,
     infos: List[ACMI_Info],
     new_id: int,
     target_pos: np.ndarray | torch.Tensor,
@@ -281,34 +281,34 @@ def missile_reuse(
     rng: np.random.Generator = np.random.default_rng(),
     ego_pos: np.ndarray | torch.Tensor | None = None,
     ego_rpy: np.ndarray | torch.Tensor | None = None,
+    ego_vel: np.ndarray | torch.Tensor | None = None,
+    echo=True,
 ):
-    index: int = reuse_index(group)
+    index: int = reuse_index(grp)
     if index == -1:
-        print("no available missile")
         return index
 
     m_info = infos[index]
     m_info.id = new_id
-    m_info.CallSign = f"M{m_info.acmi_id}"
-    infos[index] = m_info
-    group.id[index, 0] = new_id
-    group.call_sign[index] = m_info.CallSign
+    m_info.CallSign = "M{}".format(m_info.acmi_id)
+    grp.acmi_id[index, 0] = new_id
+    grp.call_sign[index, 0] = m_info.CallSign
 
     # lat0, lon0, alt0 = target.blh0()
-    th_float = group.dtype
-    device = group.device
-    det_rmax = group._det_rmax
+    th_float = grp.dtype
+    device = grp.device
+    det_rmax = grp._det_rmax
     tgt_ned_tsr = torch.asarray(target_pos, dtype=th_float, device=device).reshape(
-        1, -1
-    )  # (1,1)
+        -1, grp.position_e().shape[-1]
+    )  # (-1,3)
     pln_z = tgt_ned_tsr[0, -1].item()
     pln_alt = alt0 - pln_z
     assert len(tgt_ned_tsr.shape) == 2
     dst_index = slice(index, index + 1)
     for ntry in range(ntry_tol):
-        if ego_pos is None:
+        if ego_pos is None:  # 无载机
             losz = affcmb(rng.random(), hmin, hmax) - pln_alt
-            rxy = affcmb(rng.random(), 0.2, 0.3) * det_rmax
+            rxy = min(affcmb(rng.random(), 0.1, 0.5) * det_rmax, 5000)
             azi = affcmb(rng.random(), 0, 2 * np.pi)
             losx = rxy * np.cos(azi)
             losy = rxy * np.sin(azi)
@@ -321,41 +321,58 @@ def missile_reuse(
             rpy_tsr = torch.asarray(rpy_np, dtype=th_float, device=device).reshape(
                 1, -1
             )  # (1,3)
-            tas = float(affcmb(rng.random(), group._Vmin, group._Vmax))
-            group.set_ic_tas(tas, dst_index)
-        else:
+
+            tas = torch.asarray(
+                affcmb(rng.random(), grp._Vmin, grp._Vmax),
+                dtype=th_float,
+                device=device,
+            )
+            assert not los_tsr.isnan().any()
+            assert not tgt_ned_tsr.isnan().any()
+            grp.set_ic_pos_e(tgt_ned_tsr - los_tsr, dst_index)
+        else:  # 载机发射模式
             assert ego_rpy is not None
+            assert ego_vel is not None
             ego_pos_ = torch.asarray(ego_pos, dtype=th_float, device=device).reshape(
                 1, -1
             )
-            los_tsr = ego_pos_ - tgt_ned_tsr  # (1,3)
+            ego_vel_ = torch.asarray(ego_vel, dtype=th_float, device=device).reshape(
+                1, -1
+            )
             rpy_tsr = torch.asarray(ego_rpy, dtype=th_float, device=device).reshape(
                 1, -1
             )
-        group.set_ic_rpy_ew(rpy_tsr, dst_index)
-        group.set_ic_pos_e(tgt_ned_tsr - los_tsr, dst_index)
-        group.launch(dst_index)
+            tas = torch.clip(ego_vel_.norm(2, -1, keepdim=True), grp._Vmin, grp._Vmax)
+            assert not ego_pos_.isnan().any()
+            grp.set_ic_pos_e(ego_pos_, dst_index)
 
+        assert not rpy_tsr.isnan().any()
+        assert not tas.isnan().any()
+        grp.set_ic_rpy_ew(rpy_tsr, dst_index)
+        grp.set_ic_tas(tas, dst_index)
+
+        grp.launch(index)
         # assert norm(msl._Reb - Reb) < 1e-2, f"Reb={Reb} rpy={rpy}, Reb={msl._Reb }"
-        tc_evt = unit_tc(group, index)
+        tc_evt = unit_tc(grp, index)
         if len(tc_evt):
+            grp.set_status(grp.STATUS_INACTIVATE, index)  # 复位
             continue
         break
     else:
         raise ValueError("max try reached@missile_reset")
-    print(
-        f"missile {m_info.acmi_id} created@index={index}, "
-        + "pos_e={}, vel_e={}".format(
-            group.position_e(index).cpu().ravel().tolist(),
-            group.velocity_e(index).cpu().ravel().tolist(),
+    if echo:
+        print(
+            f"missile {m_info.acmi_id} created@index={index}, "
+            + "pos_e={}, vel_e={}".format(
+                grp.position_e()[..., index, :].cpu().tolist(),
+                grp.velocity_e()[..., index, :].cpu().tolist(),
+            )
         )
-    )
-    group.activate(index)
     return index
 
 
-def decoy_reuse(
-    group: Decoy,
+def decoy_regen(
+    grp: Decoy,
     infos: List[ACMI_Info],
     new_id: int,
     parent_pos: torch.Tensor,
@@ -363,105 +380,118 @@ def decoy_reuse(
     unit_tc: Callable[[BaseModel, int], List[Sequence[str]]],
     ntry_tol=1000,
     rng: np.random.Generator = np.random.default_rng(),
+    echo=True,
 ):
-    index: int = reuse_index(group)
+    index: int = reuse_index(grp)
     if index == -1:
-        print("no available missile")
         return index
     m_info = infos[index]
     m_info.id = new_id
     m_info.CallSign = f"D{m_info.acmi_id}"
-    infos[index] = m_info
-    group.id[index, 0] = new_id
-    group.call_sign[index] = m_info.CallSign
+    grp.acmi_id[index, 0] = new_id
+    grp.call_sign[index, 0] = m_info.CallSign
     # group.acmi_type[index] = m_info.Type
     # group.acmi_name[index] = m_info.Name
     # lat0, lon0, alt0 = target.blh0()
-    th_float = group.dtype
-    device = group.device
-    pln_pos_tsr = torch.asarray(parent_pos, dtype=th_float, device=device).reshape(
+    th_float = grp.dtype
+    device = grp.device
+    pln_pos_tsr = torch.tensor(parent_pos, dtype=th_float, device=device).reshape(
         1, -1
     )  # (1,3)
-    pln_vel_tsr = torch.asarray(parent_vel, dtype=th_float, device=device).reshape(
+    pln_vel_tsr = torch.tensor(parent_vel, dtype=th_float, device=device).reshape(
         1, -1
     )  # (1,3)
     dst_index = slice(index, index + 1)
     for ntry in range(ntry_tol):
-        group._pos_e[dst_index, :] = pln_pos_tsr
-        group._vel_e[dst_index, :] = pln_vel_tsr * (
+        grp._pos_e[dst_index, :] = pln_pos_tsr
+        grp._vel_e[dst_index, :] = pln_vel_tsr * (
             1 + (2 * torch.rand_like(pln_vel_tsr) - 1) * 0.1
         )
-        group.reset(index)
+        grp.reset(index)
+        grp.activate(index)
 
         # assert norm(msl._Reb - Reb) < 1e-2, f"Reb={Reb} rpy={rpy}, Reb={msl._Reb }"
-
-        tc_evt = unit_tc(group, index)
+        tc_evt = unit_tc(grp, index)
         if len(tc_evt):
+            grp.set_status(grp.STATUS_INACTIVATE, index)
             continue
         break
     else:
         raise ValueError("max try reached@decoy_reset")
-    print(
-        f"decoy {m_info.acmi_id} created@index={index}, "
-        + "pos_e={}, vel_e={}".format(
-            group.position_e(index).cpu().ravel().tolist(),
-            group.velocity_e(index).cpu().ravel().tolist(),
+    if echo:
+        print(
+            f"decoy {m_info.acmi_id} created@index={index}, "
+            + "pos_e={}, vel_e={}".format(
+                grp.position_e()[..., index, :].cpu().tolist(),
+                grp.velocity_e()[..., index, :].cpu().tolist(),
+            )
         )
-    )
-    group.activate(index)
     return index
 
 
 def merge_info4observe(
     ego: BaseModel,
     groups: List[BaseModel],
+    use_vision=False,
 ):
     m = ego.batch_size
-    ego_id = ego.id.reshape(1, m, 1)
-    ego_clr = ego.acmi_color.reshape(1, m, 1)
-    ego_alv = ego.is_alive().reshape(1, m, 1)
+    ego_id = ego.acmi_id.unsqueeze(-3)  # (...,1,m,1)
+    ego_alv = ego.is_alive().unsqueeze(-3)  # (...,1,m,1)
+    ego_clr = np.expand_dims(ego.acmi_color, -3)  # (...,1,m,1)
+    ego_pos = ego.position_e().unsqueeze(-3)  # (...,1,m,d)
     tmp_masks = []
     tmp_pos = []
     tmp_vel = []
     tmp_r = []
-    tmp_idt = []
+    tmp_idtt = []
+    tmp_id = []
     for grp in groups:
-        n = grp.batch_size
-        grp_ids = grp.id.reshape(n, 1, 1)
-        grp_clr = grp.acmi_color.reshape(n, 1, 1)
-        is_enm = ego_clr != grp_clr  # (n,m,1)
-        not_self = grp_ids != ego_id  # (n,m,1)
-        grp_alv = grp.is_alive().reshape(n, 1, 1)
-        tag21 = (ego_alv & grp_alv) & is_enm & not_self  # (n,m,1)
-        tmp_masks.append(tag21)
-        tmp_pos.append(grp.position_e())  # (n,3)
-        tmp_vel.append(grp.velocity_e())  # (n,3)
-        tmp_r.append(grp.vis_radius().reshape(n, 1, 1))  # (n,1)
-        tmp_idt.append(not_self)
+        grp_ids = grp.acmi_id  # (...,n,1,)
+        grp_alv = grp.is_alive().unsqueeze(-2)  # (...,n,1,1)
+        grp_clr = np.expand_dims(grp.acmi_color, -2)  # (...,n,1,1)
+        is_enm = torch.asarray(
+            ego_clr != grp_clr, dtype=torch.bool, device=ego.device
+        )  # (...,n,m,1)
+        not_self = grp_ids.unsqueeze(-2) != ego_id  # (...,n,m,1)
+        vld21 = (ego_alv & grp_alv) & is_enm & not_self  # (...,n,m,1)
+        tmp_masks.append(vld21)
+        tmp_pos.append(grp.position_e())  # (...,n,3)
+        tmp_vel.append(grp.velocity_e())  # (...,n,3)
+        if use_vision:
+            tmp_r.append(grp.vis_radius().unsqueeze(-2))  # (...,n,1,1)
+        tmp_idtt.append(not_self)
+        tmp_id.append(grp_ids)
 
-    mask = torch.cat(tmp_masks, dim=0)  # (N,m,1)
+    mask = torch.cat(tmp_masks, dim=-3)  # (...,N,m,1)
     N = mask.shape[0]
-    pos2 = torch.cat(tmp_pos, dim=0)  # (N,3)
-    vel2 = torch.cat(tmp_vel, dim=0)  # (N,3)
-    visr2 = torch.cat(tmp_r, dim=0)  # (N,1,1)
+    id2 = torch.cat(tmp_id, dim=-2)  # (...,N,1)
+    pos2 = torch.cat(tmp_pos, dim=-2)  # (...,N,3)
+    vel2 = torch.cat(tmp_vel, dim=-2)  # (...,N,3)
+    if use_vision:
+        visr2 = torch.cat(tmp_r, dim=-3)  # (...,N,1,1)
+        not_self = torch.cat(tmp_idtt, dim=-3)  # (...N,m,1)
+        visr12 = visr2.expand_as(mask)  # (...,N,m,1)
+        los12 = pos2.unsqueeze(-2) - ego_pos  # (...,N,m,3)
+        # los12 += not_self  # 距离掩码修正, 否则会在除0
 
-    not_self = torch.cat(tmp_idt, dim=0)  # (N,m,1)
-    visr12 = visr2.reshape(N, 1).broadcast_to(N, m)
-    los12 = pos2.reshape(N, 1, -1) - ego.position_e().reshape(1, m, -1)  # (N,m,3)
-    los12 += not_self  # 距离掩码修正, 否则会在除0
+        # blk = los_is_blocked_np(
+        #     los12.flatten(-3, -2).cpu().numpy(),
+        #     visr12.flatten(-3, -2).cpu().numpy(),
+        # )  # (...,N*m,1)
+        # blk = torch.asarray(blk, dtype=torch.bool, device=mask.device)  # (...,N*m,1)
+        valid = math_pt.los_is_visible(
+            los12.flatten(-3, -2),
+            visr12.flatten(-3, -2),
+            mask.flatten(-3, -2),
+        )[0]  # (...,N*m,1)
+        mask = valid.unflatten(-2, (N, m))  # (...,N,m,1)
 
-    blk = los_is_blocked(
-        los12.reshape(N * m, -1).cpu().numpy(),
-        visr12.reshape(N * m, 1).cpu().numpy(),
-    )  # (m*N,)
-    blk = torch.asarray(blk, dtype=torch.bool, device=mask.device)  # (m*N,)
-    valid = (~blk).reshape(N, m, 1)
-    mask = valid & mask  # (N,m,1)
-    mask = mask.reshape(N, m)
+    mask = mask.squeeze(-1)  # (...,N,m)
     return (
-        pos2,  # (N,3)
-        vel2,  # (N,3)
-        mask,  # (N,m)
+        pos2,  # (...,N,d)
+        vel2,  # (...,N,d)
+        mask,  # (...,N,m)
+        id2,  # (...,N,1)
     )
 
 
@@ -470,53 +500,55 @@ def render_groups(
     recorder: TacviewRecorder,
 ):
     for grp in groups:
-        n = grp.batch_size
-        idxs = torch.where(grp.is_alive())[0]
-        if len(idxs) == 0:
-            continue
-        p_ned = grp.position_e(idxs).cpu().numpy()
-        tas = grp.tas(idxs).cpu().numpy()
-        blh0 = grp.blh0(idxs).cpu().numpy()
-        lat0, lon0, alt0 = np.split(blh0, 3, axis=-1)
-        loc_n, loc_e, loc_d = np.split(p_ned, 3, axis=-1)
-        lat, lon, alt = pymap3d.ned2geodetic(loc_n, loc_e, loc_d, lat0, lon0, alt0)
-        rpy = None
-        if rpy is None:
-            try:
-                rpy = grp.rpy_eb(idxs)
-            except Exception:
-                pass
-        if rpy is None:
-            try:
-                rpy = grp.rpy_ew(idxs)
-            except Exception:
-                pass
-        if rpy is not None:
-            rpy = cast(np.ndarray, rpy.cpu().numpy())
-            rpy_deg = np.rad2deg(rpy)
-
-        idxs = idxs.cpu().tolist()
-        for i, ii in enumerate(idxs):
+        N = grp.batch_size
+        idxs_alv = torch.where(grp.is_alive().view(N, 1))[0]
+        if len(idxs_alv):
+            p_ned = grp.position_e().view(N, -1)[idxs_alv, :].cpu().numpy()  # (n,3)
+            tas = grp.tas().view(N, -1)[idxs_alv, :].cpu().numpy()  # (n,1)
+            blh0 = grp.blh0().view(N, -1)[idxs_alv, :].cpu().numpy()  # (n,3)
+            lat0, lon0, alt0 = np.split(blh0, 3, axis=-1)
+            loc_n, loc_e, loc_d = np.split(p_ned, 3, axis=-1)
+            lat, lon, alt = pymap3d.ned2geodetic(
+                loc_n, loc_e, loc_d, lat0, lon0, alt0
+            )  # (n,1)
+            rpy = None
             if rpy is None:
-                roll_i = pitch_i = yaw_i = None
-            else:
-                roll_i, pitch_i, yaw_i = rpy_deg[i]
-            recorder.add(
-                recorder.format_unit(
-                    int(grp.id[i, 0].item()),
-                    lat=lat[i],
-                    lon=lon[i],
-                    alt=alt[i],
-                    tas=tas[i],
-                    roll=roll_i,
-                    pitch=pitch_i,
-                    yaw=yaw_i,
-                    Name=str(grp.acmi_name[ii]),
-                    Color=str(grp.acmi_color[ii]),
-                    Type=str(grp.acmi_type[ii]),
-                    CallSign=str(grp.call_sign[ii]),
+                try:
+                    rpy = grp.rpy_eb()
+                    rpy = rpy.view(N, -1)[idxs_alv, :]  # (n,3)
+                except Exception:
+                    pass
+            if rpy is None:
+                try:
+                    rpy = grp.rpy_ew()
+                    rpy = rpy.view(N, -1)[idxs_alv, :]  # (n,3)
+                except Exception:
+                    pass
+            if rpy is not None:
+                rpy = cast(np.ndarray, rpy.cpu().numpy())
+                rpy_deg = np.rad2deg(rpy)
+
+            for i, ii in enumerate(cast(List[int], idxs_alv.cpu().tolist())):
+                if rpy is None:
+                    roll_i = pitch_i = yaw_i = None
+                else:
+                    roll_i, pitch_i, yaw_i = rpy_deg[i]
+                recorder.add(
+                    recorder.format_unit(
+                        int(grp.acmi_id[i, 0].item()),
+                        lat=lat[i, 0],
+                        lon=lon[i, 0],
+                        alt=alt[i, 0],
+                        tas=tas[i, 0],
+                        roll=roll_i,
+                        pitch=pitch_i,
+                        yaw=yaw_i,
+                        Name=str(grp.acmi_name.reshape(N, -1)[ii, 0]),
+                        Color=str(grp.acmi_color.reshape(N, -1)[ii, 0]),
+                        Type=str(grp.acmi_type.reshape(N, -1)[ii, 0]),
+                        CallSign=str(grp.call_sign.reshape(N, -1)[ii, 0]),
+                    )
                 )
-            )
 
 
 def try_kill_groups(
@@ -524,42 +556,43 @@ def try_kill_groups(
     groups: List[BaseModel],
     recorder: TacviewRecorder,
 ):
-    m = ego.batch_size
-    tag1 = ego.is_dying().reshape(m, 1)
-    ids1 = ego.id.reshape(m, 1)
-    p1 = ego.position_e().reshape(m, 1, -1)
-    kr = (torch.zeros_like(ego.tas()) + ego.kill_radius).reshape(m, 1)
+    m = ego.acmi_id.shape[-2]
+    alv1 = ego.is_dying().unsqueeze(-2)  # (...,m,1,1)
+    ids1 = ego.acmi_id.unsqueeze(-2)  # (...,m,1,1)
+    p1 = ego.position_e().unsqueeze(-2)  # (...,m,1,d)
+    kr = (torch.zeros_like(ego.tas()) + ego.kill_radius).unsqueeze(-2)  # (...,m,1,1)
+    #
+    envmidx = [0] * len(ego.acmi_id.shape[:-2])
     msgs: List[str] = []
-    for i in range(m):
-        if not tag1[i, 0].item():
+    for i1 in range(m):
+        if not alv1[*envmidx, i1, 0].item():
             continue
-        idh = recorder.format_id(int(ids1[i, 0].item()))
-        md = ego.miss_distance[i, 0].item()
-        msg = f"{idh} exploding MD={md:.1f}"
+        idh = recorder.format_id(int(ids1[*envmidx, i1, 0].item()))
+        md = ego.miss_distance[*envmidx, i1, 0].item()
+        msg = f"{idh} exploding, MD={md:.1f}"
         recorder.add(recorder.event_bookmark(msg))
         msgs.append(msg)
-
+    #
     for grp in groups:
-        n = grp.batch_size
-        ids2 = grp.id.reshape(1, n)
-        is_self = ids1 == ids2
-        tag2 = grp.is_alive().reshape(1, n)
-        p2 = grp.position_e().reshape(1, n, -1)
-        dij = torch.norm(p1 - p2, dim=-1)  # (m,n)
-        kill_evt = (~is_self) & (tag1 & tag2) & (dij < kr)  # (m,n)
-        kill_tag_ = kill_evt.any(0)  # (n,)
-        if kill_tag_.any():
-            idxs = torch.where(kill_tag_)[0]
-            grp.set_status(grp.STATUS_DYING, idxs)
-            for i in range(m):
-                id1 = recorder.format_id(int(ego.id[i, 0].item()))
-                for j in range(n):
-                    if not kill_evt[i, j].item():
-                        continue
-                    id2 = recorder.format_id(int(grp.id[j, 0].item()))
-                    evt = "{} hit {}".format(id1, id2)
-                    msgs.append(evt)
-                    recorder.add(recorder.event_bookmark(evt))
+        n = grp.acmi_id.shape[-2]
+        ids2 = grp.acmi_id.unsqueeze(-3)  # (...,1,n,1)
+        alv2 = grp.is_alive().unsqueeze(-3)  # (...,1,n,1)
+        p2 = grp.position_e().unsqueeze(-3)  # (...,1,n,d)
+        is_self = ids1 == ids2  # (...,m,n,1)
+        dij = torch.norm(p1 - p2, dim=-1, keepdim=True)  # (...,m,n,1)
+        kill_evt = (~is_self) & (alv1 & alv2) & (dij < kr)  # (...,m,n,1) 有效击杀
+        kill_tag_ = kill_evt.any(-3)  # (...,n,1)
+        grp.status[...] = torch.where(kill_tag_, grp.STATUS_DYING, grp.status)
+        #
+        for i1 in range(m):
+            id1 = recorder.format_id(int(ego.acmi_id[*envmidx, i1, 0].item()))
+            for i2 in range(n):
+                if not kill_evt[*envmidx, i1, i2].item():
+                    continue
+                id2 = recorder.format_id(int(grp.acmi_id[*envmidx, i2, 0].item()))
+                evt = "{} hit {}".format(id1, id2)
+                msgs.append(evt)
+                recorder.add(recorder.event_bookmark(evt))
     if len(msgs):
         print(*msgs, sep="\n")
 
@@ -587,10 +620,11 @@ def game_run(
     f_is_paused: Callable[[], bool] | None = None,
     f_set_pause: Callable[[bool], None] | None = None,
     tacview_full=True,
+    enm_msl_N=4,
+    fri_msl_N=2,
+    decoys_N=30,
+    msl_simple_sens=False,  # 1->导弹开上帝视角, 0->导弹视野受限
 ):
-    fri_msl_N = 2
-    enm_msl_N = 2
-    decoys_N = 30
     fri_pln_id_next = 0xA0000
     (
         fri_pln_id_next,
@@ -601,7 +635,7 @@ def game_run(
         enm_msl_id_next,
     ) = reset_id0(fri_pln_id_next)
     g = 9.80665  # m/s^2
-    Vmin = 100
+    Vmin = 100.0
     # 飞机能力参数
     nx_max = 1.5
     nx_min = -0.5
@@ -609,11 +643,13 @@ def game_run(
     nz_umax = 10.0
     dmu_max = (2 * math.pi) / 3  # 3s 转 360°
     pln_V_lb = Vmin
-    pln_V_ub = 500
+    pln_V_ub = 240
 
     th_float = torch.float32
     np_float = np.float32
     device = "cpu"
+    if device == "cpu":
+        print("CUDA 在这里不够快!")
 
     # 干扰参数
     pln_objr = 10.0
@@ -638,8 +674,9 @@ def game_run(
     fri_color = ACMI_Color.Red.value
     enm_color = ACMI_Color.Blue.value
 
-    simdt_sec = 1.0 / 20
-    simdt_ms = int(simdt_sec * 1000)
+    simdt_ms = 50
+    simdt_sec = simdt_ms * 1e-3
+
     rng = np.random.default_rng()
 
     lat0 = 30.0
@@ -647,7 +684,9 @@ def game_run(
     alt0 = 0
     hmax = 25000
     hmin = 100
-    simt_tol = 20 * 60
+    simt_tol = 20 * 60  # 全局仿真时限
+    msl_simt_tol = 30.0
+    dcy_simt_tol = 10.0
 
     logr = log_ext.reset_logger(
         __name__ + "_game",
@@ -679,13 +718,9 @@ def game_run(
     use_plane = True
     if use_plane:
         agent = Plane(
-            tas=240,
-            rpy_ew=0,
-            position_e=torch.asarray(
-                np.asarray([0, 0, -(hmax + hmin) * 0.5], dtype=np_float), dtype=th_float
-            ),
+            # tas=240,
+            # rpy_ew=0,
             sim_step_size_ms=simdt_ms,
-            id=fri_pln_id_next,
             use_gravity=False,
             Vmin=pln_V_lb,
             Vmax=pln_V_ub,
@@ -698,18 +733,21 @@ def game_run(
             lat0=lat0,
             lon0=lon0,
             alt0=alt0,
+            acmi_id=fri_pln_id_next,
             acmi_name=pln_info.Name,
             acmi_color=pln_info.Color,
             acmi_type=pln_info.Type,
             acmi_parent="",
             call_sign=pln_info.CallSign,
             vis_radius=pln_objr,
+            dtype=th_float,
+            device=device,
         )
     else:
         agent = Missile(
-            batch_size=1,
+            group_shape=1,
             sim_step_size_ms=simdt_ms,
-            id=fri_pln_id_next,
+            acmi_id=fri_pln_id_next,
             Vmin=pln_V_lb,
             Vmax=pln_V_ub,
             dtype=th_float,
@@ -721,12 +759,16 @@ def game_run(
             lon0=lon0,
             alt0=alt0,
         )
-    agent.set_ic_tas(pln_V_lb + (pln_V_ub - pln_V_lb) * 0.9)
-    agent.set_ic_rpy_ew(0)
+    agent.DEBUG = True
+    agent.set_ic_tas((pln_V_lb + (pln_V_ub - pln_V_lb) * 0.9), None)
+    agent.set_ic_rpy_ew(0, None)
     agent.set_ic_pos_e(
         torch.tensor(
-            np.asarray([0, 0, -(hmax + hmin) * 0.5], dtype=np_float), dtype=th_float
-        ).reshape(1, 3)
+            np.asarray([0, 0, -(hmax + hmin) * 0.5]),
+            dtype=th_float,
+            device=device,
+        ).reshape(1, 3),
+        None,
     )
     agent.logr = pln_logr
     for iteam, msl_N in enumerate(
@@ -735,8 +777,8 @@ def game_run(
         msl_color = fri_color if iteam == 0 else enm_color
         msls = Missile(
             sim_step_size_ms=simdt_ms,
-            id=fri_msl_id_next if iteam == 0 else enm_msl_id_next,
-            batch_size=msl_N,
+            acmi_id=fri_msl_id_next if iteam == 0 else enm_msl_id_next,
+            group_shape=msl_N,
             Vmin=msl_Vmin,
             Vmax=msl_Vmax,
             det_rmax=msl_det_rmax,
@@ -761,7 +803,6 @@ def game_run(
             msls._pos_e[j, :] = agent._pos_e[0, :] + 1000
             msls.reset(j)
             msls.set_status(msls.STATUS_INACTIVATE, j)
-
             if iteam == 0:
                 fri_msl_id_next += 1
                 newid = fri_msl_id_next
@@ -771,17 +812,18 @@ def game_run(
             msls_info.append(
                 ACMI_Info(
                     newid,
-                    Color=msls.acmi_color[j],
-                    Name=msls.acmi_name[j],
-                    Type=msls.acmi_type[j],
-                    Parent=msls.acmi_parent[j],
+                    Color=msls.acmi_color[j, 0],
+                    Name=msls.acmi_name[j, 0],
+                    Type=msls.acmi_type[j, 0],
+                    Parent=msls.acmi_parent[j, 0],
                 )
             )
-            msls.id[j, 0] = newid
+            msls.acmi_id[j, 0] = newid
 
         if iteam == 0:
             fri_msl = msls
             fri_msl_infos = msls_info
+            fri_msl.DEBUG = True
         else:
             enm_msl = msls
             enm_msl_infos = msls_info
@@ -790,8 +832,8 @@ def game_run(
 
     decoys = Decoy(
         sim_step_size_ms=simdt_ms,
-        id=fri_dcy_id_next,
-        batch_size=decoys_N,
+        acmi_id=fri_dcy_id_next,
+        group_shape=decoys_N,
         vis_radius=dec_objr,
         effect_duration=30.0,
         dtype=th_float,
@@ -804,6 +846,7 @@ def game_run(
         acmi_type=ACMI_Types.FlareDecoy.value,
     )
     decoys.logr = decoy_logr
+    decoys.DEBUG = True
     decoys_info: List[ACMI_Info] = []
     for j in range(decoys_N):
         decoys._pos_e[j, :] = agent._pos_e[0, :]
@@ -812,11 +855,11 @@ def game_run(
         decoys.set_status(msls.STATUS_INACTIVATE, j)
 
         if j % 2 == 0:
-            decoys.acmi_name[j] = "FlareDecoy"
-            decoys.acmi_type[j] = ACMI_Types.FlareDecoy.value
+            decoys.acmi_name[j, 0] = "FlareDecoy"
+            decoys.acmi_type[j, 0] = ACMI_Types.FlareDecoy.value
         else:
-            decoys.acmi_name[j] = "Chaff"
-            decoys.acmi_type[j] = ACMI_Types.Chaff.value
+            decoys.acmi_name[j, 0] = "Chaff"
+            decoys.acmi_type[j, 0] = ACMI_Types.Chaff.value
 
         fri_dcy_id_next += 1
         decoys_info.append(
@@ -832,17 +875,25 @@ def game_run(
     nlim_msl = -1
     nlim_dec = -1
 
-    def unit_tc(unit: BaseModel, idx: int = 0, Vmin=Vmin) -> List[Sequence[str]]:
+    def unit_tc(
+        unit: BaseModel,
+        idx: int = 0,
+        Vmin: float = Vmin,
+        tmax: float = simt_tol,
+    ) -> List[Sequence[str]]:
         rst = []
-        if unit.is_alive(idx).item():
-            alt = unit.altitude_m(idx).item()
+        if unit.is_alive().view(-1, 1)[idx, 0].item():
+            alt = unit.altitude_m().view(-1, 1)[idx, 0].item()
             if alt <= hmin:
                 rst.append(("fly too low", f"alt={alt:.1f}"))
             elif alt > hmax:
                 rst.append(("fly too high", f"alt={alt:.1f}"))
-            tas = unit.tas(idx).item()
+            tas = unit.tas().view(-1, 1)[idx, 0].item()
             if tas <= Vmin:
                 rst.append(("fly too slow", f"tas={tas:.1f}"))
+            t = unit.sim_time_s().view(-1, 1)[idx, 0].item()
+            if t > tmax:
+                rst.append(("life time out", f"t={t:.1f}"))
         return rst
 
     recorder = TacviewRecorder()
@@ -850,13 +901,14 @@ def game_run(
     ss_reset = 0
     ss_step = 1
     ss_pause = 2
-    episode = 0
     ss = ss_reset
     action0 = PlaneAction()
     tmr_fresh = Timer_Pulse(simdt_sec)
     tmr_fps = Timer_Pulse()
     tmr_echo = Timer_Pulse(1.0)
-    simk = 0
+    print("若实际FPS低于", f"{1/simdt_sec:.1f}", "则不能保证实时仿真")
+    simepi = 0
+    simk = 0  # 仿真步数
     max_enm_missiles = enm_msl.batch_size  # 同时存在的最大数量
 
     def get_simt():
@@ -864,7 +916,7 @@ def game_run(
 
     game_groups: List[BaseModel] = [
         agent,  # agent@group
-        # fri_msl,# @group
+        fri_msl,  # @group
         enm_msl,  # @group
         decoys,  # @group
     ]
@@ -875,7 +927,7 @@ def game_run(
             if ss == ss_reset:  # @reset
                 print(  # @hint
                     f"{HOTKEY_ESC} 连按退出",
-                    f"{HOTKEY_RESET} 重启",
+                    f"{HOTKEY_RESET} 连按重启",
                     f"{HOTKEY_NX_N} / {HOTKEY_NX_P} 切向过载",
                     f"{HOTKEY_NY_N} / {HOTKEY_NY_P} 侧向过载",
                     f"{HOTKEY_NZ_N} / {HOTKEY_NZ_P} 俯仰过载",
@@ -890,7 +942,7 @@ def game_run(
                 acmitime = datetime(acmitime.year, acmitime.month, acmitime.day)
                 if tacview_full:
                     rst = recorder.reset_remote(
-                        addr=tel_addr, reference_time=acmitime, timeout=10.0
+                        addr=tel_addr, reference_time=acmitime, timeout=5.0
                     )
                     if not rst:
                         print("reset_remote rfailed")
@@ -900,10 +952,13 @@ def game_run(
                         # else:
                         #     pass
                         continue
-                acmi_fn = runs_dir / f"{episode}.acmi"
+                acmi_fn = runs_dir / f"{simepi}.acmi"
                 acmi_fn.parent.mkdir(exist_ok=True, parents=True)
                 recorder.reset_local(acmi_fn, reference_time=acmitime)
 
+                ncomsum_msl = 0
+                ncomsum_dec = 0
+                ndoge_msl = 0
                 (
                     fri_pln_id_next,
                     fri_dcy_id_next,
@@ -914,16 +969,18 @@ def game_run(
                 ) = reset_id0(0xA0000)
                 for grp in game_groups:
                     arrange_id(grp)
-                    grp.reset()
+                    grp.reset(None)
                     grp.set_status(
-                        grp.STATUS_ALIVE if grp is agent else grp.STATUS_INACTIVATE
+                        grp.STATUS_ALIVE if grp is agent else grp.STATUS_INACTIVATE,
+                        None,
                     )
+                    grp.logr.debug(f"reset @Ep{simepi}")
 
                 tmr_fresh.reset()
                 tmr_fps.reset()
                 simk = 0
                 ss = ss_step
-            elif ss == ss_step:
+            elif ss == ss_step:  # @step
                 if f_is_paused and f_is_paused():
                     ss = ss_pause
                     recorder.add(recorder.event_bookmark("PAUSE"))
@@ -943,8 +1000,7 @@ def game_run(
 
                 act = np.clip(get_action(), -1, 1)
 
-                emn_msl_idxs = torch.where(enm_msl.is_alive())[0]
-
+                emn_msl_idxs = torch.where(enm_msl.is_alive().view(-1, 1))[0]
                 # action = PlaneAction(
                 #     nx=float(
                 #         (act[ACT_IDX_NX] * nx_max)
@@ -966,8 +1022,8 @@ def game_run(
 
                 if act[ACT_IDX_DECOY]:  # 诱饵弹
                     if decoys in game_groups:
-                        dec_idx = decoy_reuse(
-                            group=decoys,
+                        dec_idx = decoy_regen(
+                            grp=decoys,
                             infos=decoys_info,
                             new_id=fri_dcy_id_next,
                             parent_pos=agent.position_e(),
@@ -976,10 +1032,15 @@ def game_run(
                             rng=rng,
                         )
                         if dec_idx >= 0:
+                            ncomsum_dec += 1
                             fri_dcy_id_next += 1
                             msg = "{} launched decoy {}".format(
-                                recorder.format_id(int(agent.id[0, 0].item())),
-                                recorder.format_id(int(decoys.id[dec_idx, 0].item())),
+                                recorder.format_id(
+                                    int(agent.acmi_id.view(-1, 1)[0, 0].item())
+                                ),
+                                recorder.format_id(
+                                    int(decoys.acmi_id.view(-1, 1)[dec_idx, 0].item())
+                                ),
                             )
                             recorder.add(recorder.event_bookmark(msg))
                         else:
@@ -990,30 +1051,38 @@ def game_run(
 
                 if act[ACT_IDX_MSL] and len(emn_msl_idxs):  # 拦截弹
                     if fri_msl in game_groups:
-                        aim_idx = int(rng.choice(emn_msl_idxs.cpu().tolist()))
-                        msl_idx = missile_reuse(
-                            group=fri_msl,
+                        aim_idx = int(rng.choice(emn_msl_idxs.cpu().numpy()))
+                        msl_idx = missile_regen(  # @拦截弹
+                            grp=fri_msl,
                             infos=fri_msl_infos,
-                            target_pos=enm_msl.position_e(aim_idx),
+                            target_pos=enm_msl.position_e(),
                             new_id=fri_msl_id_next,
                             unit_tc=partial(unit_tc, Vmin=msl_Vmin),  # @missile
                             rng=rng,
                             hmin=hmin,
                             hmax=hmax,
                             alt0=alt0,
+                            ego_pos=agent.position_e(),
+                            ego_vel=agent.velocity_e(),
+                            ego_rpy=agent.rpy_ew(),
                         )
                         if msl_idx >= 0:
+                            ncomsum_msl += 1
                             fri_msl_id_next += 1
                             msg = "{} launched {} to {}".format(
-                                recorder.format_id(int(agent.id[0, 0].item())),
-                                recorder.format_id(int(fri_msl.id[msl_idx, 0].item())),
-                                recorder.format_id(int(enm_msl.id[aim_idx, 0].item())),
+                                recorder.format_id(int(agent.acmi_id[0, 0].item())),
+                                recorder.format_id(
+                                    int(fri_msl.acmi_id[msl_idx, 0].item())
+                                ),
+                                recorder.format_id(
+                                    int(enm_msl.acmi_id[aim_idx, 0].item())
+                                ),
                             )
 
-                            msg = f"{pln_info.acmi_id} launched {msls_info[msl_idx].CallSign}"
+                            msg = f"{pln_info.acmi_id} launched {fri_msl.call_sign[msl_idx,0]}"
                             recorder.add(recorder.event_bookmark(msg))
                         else:
-                            msg = f"{pln_info.acmi_id} no available missile"
+                            msg = f"{pln_info.acmi_id} have no available missile"
                         print(msg)
                     else:
                         print("no fri_msl group, please add it into groups")
@@ -1052,42 +1121,84 @@ def game_run(
 
                 # set control
                 for grp in game_groups:
+                    if not grp.is_alive().any():
+                        continue
                     if isinstance(grp, Missile) and grp is not agent:
-                        pos, vel, mask = merge_info4observe(grp, game_groups)
-                        grp.observe(
-                            torch.asarray(pos, dtype=th_float, device=device),
-                            torch.asarray(vel, dtype=th_float, device=device),
-                            torch.asarray(mask, dtype=torch.bool, device=device),
-                        )
-                        if grp is enm_msl:
+                        if msl_simple_sens:
+                            enm = agent if grp is enm_msl else enm_msl
+                            enm_alv = enm.is_alive()
+                            if not enm_alv.any():
+                                continue
+                            idx = (torch.where(enm_alv)[0])[0]
+                            if grp.target_id[0, 0].item() != enm.acmi_id[idx, 0].item():
+                                logr.info(
+                                    ("missile lock target", enm.acmi_id[idx, 0].item())
+                                )
+                            grp.set_target(
+                                enm.position_e()[..., [idx], :],
+                                enm.velocity_e()[..., [idx], :],
+                                enm.acmi_id[..., [idx], :],
+                                None,
+                            )
+                            grp.set_action(grp.png(grp.target_pos_e, grp.target_vel_e))
+                        else:
+                            enm_pos, enm_vel, enm_mask, enm_id = merge_info4observe(
+                                grp, game_groups
+                            )
+
+                            grp.observe(
+                                torch.asarray(enm_pos, dtype=th_float, device=device),
+                                torch.asarray(enm_vel, dtype=th_float, device=device),
+                                torch.asarray(enm_id, dtype=torch.int64, device=device),
+                                torch.asarray(
+                                    enm_mask, dtype=torch.bool, device=device
+                                ),
+                            )
+                        if grp is enm_msl and simk % 5 == 0:
                             logr.debug(
-                                (
-                                    "pln_pos:{}".format(
-                                        agent.position_e(0).cpu().ravel().tolist()
-                                    ),
-                                    "pln_vel:{}".format(
-                                        agent.velocity_e(0).cpu().ravel().tolist()
-                                    ),
-                                    "emn_targ_pos:{}".format(
-                                        enm_msl._tgt_pos[0, :].cpu().ravel().tolist()
-                                    ),
-                                    "emn_targ_vel:{}".format(
-                                        enm_msl._tgt_vel[0, :].cpu().ravel().tolist()
-                                    ),
+                                "\n".join(
+                                    (
+                                        "on emn_msl observe",
+                                        "pln_pos:{}".format(
+                                            agent.position_e()[0, :]
+                                            .cpu()
+                                            .ravel()
+                                            .tolist()
+                                        ),
+                                        "emn_tgt_pos:{}".format(
+                                            enm_msl.target_pos_e[0, :]
+                                            .cpu()
+                                            .ravel()
+                                            .tolist()
+                                        ),
+                                        "pln_vel:{}".format(
+                                            agent.velocity_e()
+                                            .view(-1, 1)[0, :]
+                                            .cpu()
+                                            .ravel()
+                                            .tolist()
+                                        ),
+                                        "emn_tgt_vel:{}".format(
+                                            enm_msl.target_vel_e[0, :]
+                                            .cpu()
+                                            .ravel()
+                                            .tolist()
+                                        ),
+                                    )
                                 )
                             )
 
-                # step
+                # run ODE
                 for grp in game_groups:
-                    grp.run()
+                    grp.run(None)
 
-                plnV = agent.tas(0).item()
-                pln_alt = agent.altitude_m(0).item()
+                plnV = agent.tas().view(-1, 1)[0, 0].item()
+                pln_alt = agent.altitude_m().view(-1, 1)[0, 0].item()
                 if tmr_echo.step():
                     msg = [
                         f"fps={tmr_fps.fps():.01f}",
                         f"plnV={plnV:.01f}",
-                        "alt={:.0f}".format(pln_alt),
+                        f"alt={pln_alt:.01f}",
                     ]
                     msg = " ".join(msg)
                     msg = msg.ljust(40)
@@ -1101,7 +1212,7 @@ def game_run(
                 if f_trunc and f_trunc():
                     trunc = True
 
-                # terminate condition
+                # logic terminate condition
                 uids_to_del = []
                 for grp in game_groups:
                     if isinstance(grp, Missile):
@@ -1110,15 +1221,25 @@ def game_run(
                         boom = (grp._result != Missile.RESULT_NONE) & grp.is_alive()
                         if boom.any():
                             idxs_explode = torch.where(boom)[0]
+                            logr.info(
+                                ("boom!@", grp.acmi_id[idxs_explode, 0].cpu().tolist())
+                            )
                             grp.set_status(grp.STATUS_DYING, idxs_explode)  # 爆炸
-                            try_kill_groups(grp, game_groups, recorder)  # 群体毁伤判定
+                            try_kill_groups(grp, game_groups, recorder)  # 对群毁伤判定
+
+                    grp_tmax = simt_tol
+                    if grp is agent:
+                        pass
+                    elif isinstance(grp, BaseMissile):
+                        grp_tmax = msl_simt_tol
+                    elif isinstance(grp, BaseDecoy):
+                        grp_tmax = dcy_simt_tol
 
                     for iu in range(grp.batch_size):
-                        u_uidh = recorder.format_id(int(grp.id[iu, 0].item()))
-                        if grp.is_alive(iu).item():
-                            if grp is agent:
-                                agent
-                            tc_evt = unit_tc(grp, iu)  # 其他终止条件
+                        u_uidh = recorder.format_id(int(grp.acmi_id[iu, 0].item()))
+                        if grp.is_alive().view(-1, 1)[iu, 0].item():
+
+                            tc_evt = unit_tc(grp, iu, tmax=grp_tmax)  # @其他终止条件
                             if len(tc_evt):
                                 grp.set_status(grp.STATUS_DYING, iu)
                                 msg = [f"{u_uidh} dying"]
@@ -1129,26 +1250,43 @@ def game_run(
                                 print(msg)
                                 recorder.add(recorder.event_bookmark(msg))
 
-                        elif grp.is_dying(iu).item():
-                            grp.set_status(grp.STATUS_DEAD)
+                        elif grp.is_dying().view(-1, 1)[iu, 0].item():
+                            grp.set_status(grp.STATUS_DEAD, iu)
                             recorder.add(recorder.event_destroy(u_uidh))
                             recorder.add(recorder.event_remove(u_uidh))
                             uids_to_del.append(u_uidh)
 
+                # 死亡回收
+                for grp in game_groups:
+                    if grp is agent:
+                        continue
+                    grp_is_dead = grp.is_dead()
+                    if grp_is_dead.any():
+                        if grp is enm_msl:
+                            ndoge_msl += grp_is_dead.sum().item()
+
+                        grp.status.copy_(
+                            torch.where(
+                                grp_is_dead,
+                                grp.STATUS_INACTIVATE,
+                                grp.status,
+                            )
+                        )
+
                 # for uid in uids_to_del:  # clean deads
                 #     if uid in groups:
                 #         del groups[uid]
-                if not agent.is_alive(0):
+                if not agent.is_alive().view(-1, 1)[0, 0].item():
                     term = True
 
                 # 重复产生新导弹
                 if enm_msl in game_groups:
                     n_enm_msl = int(enm_msl.is_alive().sum().item())
-                    for iteam in range(max_enm_missiles - n_enm_msl):
-                        msl_idx = missile_reuse(
-                            group=enm_msl,
+                    for _ in range(max_enm_missiles - n_enm_msl):
+                        msl_idx = missile_regen(  # @敌方导弹
+                            grp=enm_msl,
                             infos=enm_msl_infos,
-                            target_pos=agent.position_e(0),
+                            target_pos=agent.position_e()[0, :],
                             new_id=enm_msl_id_next,
                             unit_tc=partial(unit_tc, Vmin=msl_Vmin),  # @missile,
                             rng=rng,
@@ -1158,21 +1296,29 @@ def game_run(
                         )
                         if msl_idx >= 0:
                             enm_msl_id_next += 1
-                            msg = f"spawn {enm_msl.call_sign[msl_idx]}"
+                            msg = "spawn {}".format(enm_msl.call_sign[msl_idx, 0])
                             recorder.add(recorder.event_bookmark(msg))
 
                 simk += 1
                 if get_simt() > simt_tol:
                     print("time out")
-                    game_win = agent.is_alive(0).item()
-                    if game_win:
-                        print(f"win")
-                    else:
-                        print("lose")
                     trunc = True
                 if trunc or term:
                     ss = ss_reset
-                    episode += 1
+                    simepi += 1
+                    game_win = agent.is_alive().view(-1, 1)[0, 0].item()
+                    logr.info(
+                        "\n".join(
+                            [
+                                "Ep{} end".format(simepi),
+                                "alive time={:.1f}s".format(get_simt()),
+                                "result={}".format(f"win" if game_win else "lose"),
+                                "consumed missiles={}".format(ncomsum_msl),
+                                "consumed decoys={}".format(ncomsum_dec),
+                                "doge missiles={}".format(ndoge_msl),
+                            ]
+                        )
+                    )
 
                 msg = recorder.merge()
                 if msg:
@@ -1210,16 +1356,20 @@ def demo4LOSblock():
         ],
         axis=-1,
     )
-    brs = rng.uniform(Rmin * 0.5, Rmin * 0.99, (n, 1))
+    brs = rng.uniform(Rmin * 0.2, Rmin * 0.5, (n, 1))
 
     t0 = time.time()
-    yes = los_is_blocked(ps, brs)  # (n,1)
-    yes = np.ravel(yes)
+    rst = math_pt.los_is_visible(torch.asarray(ps), torch.asarray(brs))
+    visable = rst[0].cpu().numpy()  # (n,1)
+    etc = rst[1].cpu().numpy() # (n,1)
+    blocked = ~visable
+    mix = np.ravel(blocked&etc)
+    behind = np.ravel(blocked&~etc)
     dt = max(time.time() - t0, 1e-3)
     print(f"calc_is_blocked {n} pts, {dt:.3f} s, {n/dt:.1f} pts/s")
-    fig = plt.figure("演示,关闭本窗口后游戏开始")
+    fig = plt.figure("视线遮挡演示,关闭本窗口后游戏开始")
     ax = fig.gca()
-    for mask, clr, ls in [(yes, "r", "--"), (~yes, "g", "-")]:
+    for mask, clr, ls in [(mix, "r", "--"), (visable, "g", "-"), (behind, "orange", "--")]:
         idxs = np.where(mask)[0]
         for i in idxs:
             x = ps[i, 0]
@@ -1233,7 +1383,7 @@ def demo4LOSblock():
                 # angle=0,
                 # edgecolor=clr,
                 facecolor=clr,
-                alpha=0.5,
+                alpha=0.3,
             )
             ax.plot([0, x], [0, y], linestyle=ls, c=clr)
             ax.add_patch(circle)
@@ -1242,7 +1392,7 @@ def demo4LOSblock():
     ax.set_xlabel("x")
     ax.set_ylabel("y")
 
-    plt.show()
+    plt.show(block=True)
 
 
 def main():
@@ -1254,9 +1404,11 @@ def main():
     tacview_full = True  # 是否有高级版
     _is_stop_ = False
     _esc_ = 0  # 退出程序
+    _reset_ = 0  # 重置游戏
     _trunc_ = False  # 单局中断
     _pause_ = False  # 暂停游戏
     esc_tol = 3
+    reset_tol = 3
     a_vec = np.zeros(len(ACT_KEYS))
 
     def set_pause(pause: bool = True):
@@ -1286,8 +1438,7 @@ def main():
 
     # 定义处理键盘事件的回调函数
     def on_press(key: Union[keyboard.KeyCode, keyboard.Key, None]):
-        if key is None:
-            key  # ???
+        if key is None:  # ???
             return
         nonlocal a_vec
         key_ = _Keymap.fromKey(key)
@@ -1312,7 +1463,7 @@ def main():
         # 想要停止监听则返回 False
         if key is None:  # ???
             return True
-        nonlocal a_vec, _esc_, _trunc_
+        nonlocal a_vec, _esc_, _trunc_, _reset_
         key_ = _Keymap.fromKey(key)
         if HOTKEY_ESC.equals(key_):
             _esc_ += 1
@@ -1322,8 +1473,13 @@ def main():
             else:
                 print(f"再连按 {esc_tol - _esc_} 次 esc 退出")
         elif HOTKEY_RESET.equals(key_):
-            print("重启...")
-            _trunc_ = True
+            _reset_ += 1
+            if _reset_ == reset_tol:
+                _reset_ = 0
+                print("重启...")
+                _trunc_ = True
+            else:
+                print(f"再连按 {reset_tol - _reset_} 次 {HOTKEY_RESET.keyname} 重启")
         elif HOTKEY_DECOY.equals(key_):
             a_vec[ACT_IDX_DECOY] = 1
         elif HOTKEY_DMSL.equals(key_):
@@ -1341,8 +1497,10 @@ def main():
 
         if not HOTKEY_ESC.equals(key_):
             _esc_ = 0
+        if not HOTKEY_RESET.equals(key_):
+            _reset_ = 0
 
-    game_run
+    # game_run
     kwargs = dict(
         get_action=get_action_vec,
         f_stop=is_stop,
@@ -1368,5 +1526,4 @@ def main():
 
 
 if __name__ == "__main__":
-
     main()

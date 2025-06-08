@@ -5,7 +5,7 @@ from abc import ABC, abstractmethod
 
 if TYPE_CHECKING:
     from ..proto4venv import TrueSyncVecEnv
-    from ..models.aircraft import BaseAircraft
+    from ..simulators.aircraft import BaseAircraft
 
 
 class BaseTerminationFn(ABC):
@@ -17,10 +17,14 @@ class BaseTerminationFn(ABC):
         pass
 
     @abstractmethod
-    def forward(self, env: TrueSyncVecEnv, plane: BaseAircraft, **kwargs) -> torch.Tensor:
+    def forward(
+        self, env: TrueSyncVecEnv, plane: BaseAircraft, **kwargs
+    ) -> torch.Tensor:
         pass
 
-    def __call__(self, env: TrueSyncVecEnv, plane: BaseAircraft, **kwargs) -> torch.Tensor:
+    def __call__(
+        self, env: TrueSyncVecEnv, plane: BaseAircraft, **kwargs
+    ) -> torch.Tensor:
         rst = self.forward(env, plane, **kwargs)
         shape = rst.shape
         assert shape == (env.num_envs, 1), (

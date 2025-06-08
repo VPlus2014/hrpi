@@ -14,7 +14,7 @@ class TimeRewardFn(BaseRewardFn):
         super().__init__()
         self.weight = weight
 
-    def reset(self, env: TrueSyncVecEnv, env_indices: _EnvIndexType  = None):
+    def reset(self, env: TrueSyncVecEnv, env_indices: _EnvIndexType = None):
         pass
 
     def forward(self, env: TrueSyncVecEnv, **kwargs) -> torch.Tensor | float:

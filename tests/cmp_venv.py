@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 
 
-def _setup():
+def _setup():  # 确保项目根节点在 sys.path 中
     import sys
     from pathlib import Path
 
@@ -28,12 +28,12 @@ from contextlib import ContextDecorator
 
 from tools import init_seed, as_np, as_tsr, ConextTimer
 
-from environments.models.aircraft.pdof6plane import PDOF6Plane as Plane
+from environments.simulators.aircraft.pdof6plane import PDOF6Plane as Plane
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 
 
 def demo1(
-    batch_size=1,
+    group_shape=(1,),
     max_steps=10000,
     use_tqdm=True,
     seed=0,
@@ -45,18 +45,18 @@ def demo1(
 
     model = Plane(
         tas=240,
-        rpy_ew=torch.zeros((batch_size, 3), device=device, dtype=dtype),
+        rpy_ew=0,
         device=device,
         dtype=dtype,
-        batch_size=batch_size,
+        group_shape=group_shape,
     )
-    model.reset()
+    model.reset(None)
 
     qbar = range(max_steps)
     if use_tqdm:
         qbar = tqdm(qbar)
     for itr in qbar:
-        action = rng.uniform(-1, 1, size=(batch_size, 4))
+        action = rng.uniform(-1, 1, size=group_shape + (4,))
         model.set_action(action)
 
 
@@ -64,7 +64,7 @@ def demo2(
     pexc: ProcessPoolExecutor | ThreadPoolExecutor,
     device="cpu",
     dtype=torch.float32,
-    batch_size=1,
+    group_shape=(1,),
     max_steps=10000,
     use_tqdm=True,
     seed=0,
@@ -73,14 +73,14 @@ def demo2(
     tasks = [
         pexc.submit(
             demo1,
-            batch_size=1,
+            group_shape=(1,),
             max_steps=max_steps,
             use_tqdm=False,
             seed=seed,
             device=device,
             dtype=dtype,
         )
-        for _ in range(batch_size)
+        for _ in range(np.prod(group_shape))
     ]
     # 等待任务完成
     _k = 0
@@ -112,7 +112,7 @@ def main():
     config: dict[str, Any] = dict(
         device="cuda",
         dtype=torch.float32,
-        batch_size=batch_size,
+        group_shape=batch_size,
         max_steps=10,
         use_tqdm=True,
         seed=0,

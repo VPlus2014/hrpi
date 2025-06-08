@@ -4,6 +4,7 @@ from typing import TYPE_CHECKING
 import torch
 from .base_reward_fn import BaseRewardFn
 
+
 class AltitudeKeepingRewardFn(BaseRewardFn):
     def __init__(self, altitude: float, weight: float = 1) -> None:
         super().__init__()
@@ -15,4 +16,4 @@ class AltitudeKeepingRewardFn(BaseRewardFn):
 
     def forward(self, env, plane, **kwargs) -> torch.Tensor:
         err = torch.abs(self.altitude - unit.altitude())
-        return  -err
+        return -err

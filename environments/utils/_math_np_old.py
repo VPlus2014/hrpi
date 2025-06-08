@@ -11,6 +11,8 @@ import torch
 _bkbn = torch
 _stack = _bkbn.stack
 _cat = _bkbn.cat
+_chunk = _bkbn.chunk
+_split = _bkbn.split
 _zeros_like = _bkbn.zeros_like
 _ones_like = _bkbn.ones_like
 _sin = _bkbn.sin
@@ -20,7 +22,6 @@ _asin = _bkbn.asin
 _where = _bkbn.where
 _pow = _bkbn.pow
 _sqrt = _bkbn.sqrt
-_split = _bkbn.split
 _norm = _bkbn.norm
 _clamp = _bkbn.clamp
 _clip = _clamp
@@ -773,7 +774,7 @@ def ned2aer(xyz: torch.Tensor) -> torch.Tensor:
 
 @torch.jit.script
 def _aer2ned(aer: torch.Tensor) -> torch.Tensor:
-    az, el, r = torch.split(aer, [1, 1, 1], -1)  # (...,1)
+    az, el, r = torch.chunk(aer, 3, -1)  # (...,1)
 
     rxy = r * torch.cos(el)
     z = -r * torch.sin(el)
@@ -798,9 +799,9 @@ def aer2ned(aer: torch.Tensor) -> torch.Tensor:
 @torch.jit.script
 def _uvw2alpha_beta(uvw: torch.Tensor):
     uvw = normalize(uvw)
-    u, v, w = torch.split(uvw, [1, 1, 1], -1)  # (...,1)
-    alpha = torch.atan2(w, u)
-    beta = torch.asin(v)
+    u, v, w = _chunk(uvw, 3, -1)  # (...,1)
+    alpha = _atan2(w, u)
+    beta = _asin(v)
     return alpha, beta
 
 

@@ -1,7 +1,7 @@
 import torch
 from typing import TYPE_CHECKING
 from ..base_reward_fn import BaseRewardFn
-from environments.utils.math_torch import euler_from_quat, ned2aer
+from environments.utils.math_pt import euler_from_quat, ned2aer
 
 if TYPE_CHECKING:
     from environments.evasion import EvasionEnv
@@ -9,6 +9,7 @@ if TYPE_CHECKING:
 
 class AircraftShotdownRewardFn(BaseRewardFn):
     """击落事件惩罚"""
+
     def __init__(self, weight: float):
         super().__init__()
         self.weight = weight

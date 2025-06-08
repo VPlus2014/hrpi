@@ -1,6 +1,6 @@
 # 张量运算辅助 250605
 from __future__ import annotations
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Callable, Sequence, cast
 import math
 from typing import Any, List, Tuple, TypeVar, Union
 
@@ -18,6 +18,8 @@ _InArrOrNum = Union[_InArr, _InNum]
 _FloatNDArr = Union[_NDArr[_floating], _NDArr[_float32], _NDArr[_float64]]
 _T = TypeVar("_T")
 
+_split = _bkbn.split
+_cross = _bkbn.cross
 _cat = _bkbn.concatenate
 _stack = _bkbn.stack
 _asarray = _bkbn.asarray
@@ -35,6 +37,7 @@ _ones = _bkbn.ones
 _reshape = _bkbn.reshape
 _broadcast_arrays = _bkbn.broadcast_arrays
 _norm = norm
+_sum = _bkbn.sum
 
 
 def _split_keepdim(v, axis=-1) -> List[_FloatNDArr]:
@@ -45,6 +48,70 @@ _PI = math.pi
 _2PI = math.tau
 _PI_HALF = _PI * 0.5
 _NPI = -_PI
+
+
+_DynamicsFuncType = Union[
+    Callable[
+        [
+            Union[_NDArr | float],  # $0 时间
+            Sequence[Union[_NDArr | float]],  # $1 状态
+        ],
+        Sequence[Union[_NDArr | float]],
+    ],
+    Callable,
+]
+
+
+def ode_rk45(
+    f: _DynamicsFuncType,
+    t0: _NDArr | float,
+    x0: Sequence[_NDArr],
+    dt: _NDArr | float,
+) -> list[_NDArr]:
+    """定步长 4阶 Runge-Kutta 法"""
+    dt_hf = dt * 0.5
+    t1 = t0 + dt_hf
+
+    w1 = f(t0, x0)
+    w2 = f(t1, [xi + dt_hf * wi for xi, wi in zip(x0, w1)])
+    w3 = f(t1, [xi + dt_hf * wi for xi, wi in zip(x0, w2)])
+    w4 = f(t0 + dt, [xi + dt * wi for xi, wi in zip(x0, w3)])
+
+    x_next = [
+        xi + dt / 6.0 * (wi1 + 2.0 * wi2 + 2.0 * wi3 + wi4)
+        for xi, wi1, wi2, wi3, wi4 in zip(x0, w1, w2, w3, w4)
+    ]
+    return x_next
+
+
+def ode_rk23(
+    f: _DynamicsFuncType,
+    t0: _NDArr | float,
+    x0: Sequence[_NDArr],
+    dt: _NDArr | float,
+) -> list[_NDArr]:
+    """定步长 2阶 Runge-Kutta 法（改进欧拉法）"""
+    dt_hf = dt * 0.5
+    t1 = t0 + dt_hf
+
+    w1 = f(t0, x0)
+    w2 = f(t1, [xi + dt_hf * wi for xi, wi in zip(x0, w1)])
+    x_next = [xi + dt_hf * (wi1 + wi2) for xi, wi1, wi2 in zip(x0, w1, w2)]
+    return x_next
+
+
+def ode_euler(
+    f: _DynamicsFuncType,
+    t0: _NDArr | float,
+    x0: Sequence[_NDArr],
+    dt: _NDArr | float,
+):
+    """
+    欧拉法
+    """
+    w1 = f(t0, x0)
+    x_next = [xi + dt * wi for xi, wi in zip(x0, w1)]
+    return x_next
 
 
 def modin(x, a: _InArrOrNum = 0, m: _InArrOrNum = _2PI) -> _FloatNDArr:
@@ -205,22 +272,29 @@ def rpy2mat(rpy, axis=-1) -> _FloatNDArr:
         axis=axis,
     )
     r = r3 @ r2 @ r1
-    return r
+    return r # type: ignore
 
 
 def rpy2mat_inv(Reb, roll_ref_rad: _InArrOrNum = 0.0, eps=1e-4):
-    """rpy2mat 的逆映射，当发生万向节死锁时，需要给出 roll_ref_rad"""
+    """
+    rpy2mat 的逆映射，当发生万向节死锁时，需要给出 roll_ref_rad
+    Args:
+        Reb: 旋转矩阵 Reb, shape=(...,3,3)
+        roll_ref_rad: 参考姿态的 roll (units: rad), 用于处理万向节死锁, float or shape=(...,1)
+    Returns:
+        rpy: (roll,pitch,yaw), shape=(...,3)
+    """
     Reb = _asarray(Reb)
     assert Reb.shape[-2:] == (3, 3), "expected matrix shape (...,3,3), got {}".format(
         Reb.shape
     )
 
-    s2 = _clip(-Reb[..., 2, 0], -1.0, 1.0)
+    s2 = _clip(-Reb[..., 2, [0]], -1.0, 1.0)
     theta: _FloatNDArr = _arcsin(s2)
-    c2s1 = Reb[..., 2, 1]  # R32
-    c2c1 = Reb[..., 2, 2]  # R33
-    c2s3 = Reb[..., 1, 0]  # R21
-    c2c3 = Reb[..., 0, 0]  # R11
+    c2s1 = Reb[..., 2, [1]]  # R32
+    c2c1 = Reb[..., 2, [2]]  # R33
+    c2s3 = Reb[..., 1, [0]]  # R21
+    c2c3 = Reb[..., 0, [0]]  # R11
 
     gl = 1 - _abs(s2) < eps
     _0 = _zeros_like(theta)
@@ -230,16 +304,17 @@ def rpy2mat_inv(Reb, roll_ref_rad: _InArrOrNum = 0.0, eps=1e-4):
     roll_ref_rad = _arctan2(s1, c1)
     s2s1 = s1 * s2
     s2c1 = c1 * s2
-    R22 = Reb[..., 1, 1]
-    R12 = Reb[..., 0, 1]
-    R23 = Reb[..., 1, 2]
-    R13 = Reb[..., 0, 2]
+    R22 = Reb[..., 1, [1]]
+    R12 = Reb[..., 0, [1]]
+    R23 = Reb[..., 1, [2]]
+    R13 = Reb[..., 0, [2]]
     s3 = s2s1 * R22 - c1 * R12 + s2c1 * R23 + s1 * R13
     c3 = c1 * R22 + s2s1 * R12 - s1 * R23 + s2c1 * R13
 
-    phi: _FloatNDArr = _where(gl, roll_ref_rad, _arctan2(c2s1, c2c1))
+    phi: _FloatNDArr = _where(gl, roll_ref_rad, _arctan2(c2s1, c2c1))  # (...,1)
     psi: _FloatNDArr = _where(gl, _arctan2(s3, c3), _arctan2(c2s3, c2c3))
-    return phi, theta, psi
+    rpy = _cat([phi, theta, psi], axis=-1)
+    return rpy
 
 
 def rot_demo():
@@ -340,7 +415,7 @@ def rot_demo():
         assert tst_vecs[0].shape == rpy_t.shape
         tst_vecs4mat = [v.reshape(*v.shape, 1) for v in tst_vecs]  # (...,3,1)
         Ys_TebQ = _stack([TebQ @ v for v in tst_vecs4mat], axis=-3).squeeze(-1)
-        Ys_Qeb = _stack([quat_rot(Qeb, v) for v in tst_vecs], axis=-2)
+        Ys_Qeb = _stack([quat_rotate(Qeb, v) for v in tst_vecs], axis=-2)
         errs_TQ = norm(Ys_Qeb - Ys_TebQ, axis=-1)
         errs_TQ_btch_ub = errs_TQ.max()
         if errs_TQ_btch_ub > err_tol:
@@ -427,28 +502,28 @@ def rot_demo():
     print(f"err_TQ_max={err_TQ_max:.6g}")
 
 
-def quat_prod(p, q, axis=-1) -> _FloatNDArr:
-    p, q = _broadcast_arrays(p, q)
-    p0, p1, p2, p3 = _split_keepdim(p, axis=axis)  # (...,1)
-    q0, q1, q2, q3 = _split_keepdim(q, axis=axis)  # (...,1)
-    r0 = p0 * q0 - p1 * q1 - p2 * q2 - p3 * q3
-    r1 = p0 * q1 + q0 * p1 + p2 * q3 - p3 * q2
-    r2 = p0 * q2 + q0 * p2 + p3 * q1 - p1 * q3
-    r3 = p0 * q3 + q0 * p3 + p1 * q2 - p2 * q1
-    pq = _cat([r0, r1, r2, r3], axis=axis)  # (...,4)
+def quat_prod(p: _NDArr, q: _NDArr) -> _FloatNDArr:
+    reP, imP = _split(p, [1], axis=-1)
+    reQ, imQ = _split(q, [1], axis=-1)
+    pq = _cat(
+        [
+            reP * reQ - (imP * imQ).sum(-1, keepdims=True),
+            reP * imQ + reQ * imP + _cross(imP, imQ),
+        ],
+        -1,
+    )
     return pq  # type: ignore
+
+
+quat_mul = quat_prod
 
 
 def rpy2quat(rpy_rad, axis=-1):
     r"""
     输入欧拉角(rad)，输出规范四元数 Q=Q_{e3,yaw}*Q_{e2,pitch}*Q_{e1,roll}
     """
-    rpy_rad = _asarray(rpy_rad)
-    roll, pitch, yaw = _split_keepdim(rpy_rad, axis=axis)
-    # assert roll.shape[-1] == 1, "expected last dim to be 1, got {}".format(roll.shape)
-    r_hf = roll * 0.5  # (...,1)
-    p_hf = pitch * 0.5
-    y_hf = yaw * 0.5
+    rpy_hf = _asarray(rpy_rad) * 0.5
+    r_hf, p_hf, y_hf = _split_keepdim(rpy_hf, axis=axis)  # (...,1)
     _0 = _zeros_like(r_hf)
     q1 = _cat([_cos(r_hf), _sin(r_hf), _0, _0], axis=axis)
     q2 = _cat([_cos(p_hf), _0, _sin(p_hf), _0], axis=axis)
@@ -456,61 +531,64 @@ def rpy2quat(rpy_rad, axis=-1):
     return quat_prod(quat_prod(q3, q2), q1)
 
 
-def quat2mat(q, axis=-1, normalize=True) -> _FloatNDArr:
+def quat2mat(q) -> _FloatNDArr:
     r"""
     R@v = Q*(0,v)*Q^{-1}
     """
     q_: _FloatNDArr = _asarray(q)
-    if normalize:
-        q_ = quat_normalize(q_, axis=axis)
-    axis = axis % len(q_.shape)
-
-    _old = False
-    if _old:
-        _coshf = quat_Re(q_)  # (...,1), \cos(\theta/2)
-        _coshf = _coshf.reshape(*_coshf.shape, 1)  # (...,1,1)
-        _2coshf = _coshf + _coshf  # 2*\cos(\theta/2)
-        imQ = quat_Im(q_)  # (...,3), \sin(\theta/2) * n, \|n\|_2=1
-        imQ_ = imQ.reshape(*imQ.shape, 1)  # (...,3,1)
-        imQ_T = imQ_.swapaxes(-1, -2)  # (...,1,3)
-        imQ_wedge = R3_wedge(imQ)
-        I3 = _bkbn.eye(3, dtype=q_.dtype)
-        I3 = I3.reshape(*([1] * (len(q_.shape) - 1)), 3, 3)
-        m1 = (_2coshf * _coshf) * I3 - I3
-        m2 = (2 * imQ_) @ imQ_T
-        m3 = _2coshf * imQ_wedge
-        r = m1 + m2 + m3
-    else:
-        q0, q1, q2, q3 = _split_keepdim(q_, axis=axis)  # (...,1)
-        _2q0 = q0 + q0
-        _2q1 = q1 + q1
-        _2q2 = q2 + q2
-        _2q3 = q3 + q3
-        _2q0q1 = _2q0 * q1
-        _2q0q2 = _2q0 * q2
-        _2q0q3 = _2q0 * q3
-        _2q1q2 = _2q1 * q2
-        _2q1q3 = _2q1 * q3
-        _2q2q3 = _2q2 * q3
-        _2q0q0_1 = _2q0 * q0 - 1.0
-        A11 = _2q1 * q1 + _2q0q0_1
-        A22 = _2q2 * q2 + _2q0q0_1
-        A33 = _2q3 * q3 + _2q0q0_1
-        A12 = _2q1q2 - _2q0q3
-        A21 = _2q1q2 + _2q0q3
-        A13 = _2q1q3 + _2q0q2
-        A31 = _2q1q3 - _2q0q2
-        A23 = _2q2q3 - _2q0q1
-        A32 = _2q2q3 + _2q0q1
-        r = _stack(
-            [
-                _cat([A11, A12, A13], axis=axis),
-                _cat([A21, A22, A23], axis=axis),
-                _cat([A31, A32, A33], axis=axis),
-            ],
-            axis=axis,
-        )  # (...,3,3)
+    q_ = normalize(q_)
+    q0, q1, q2, q3 = _split_keepdim(q_)  # (...,1)
+    _2q0 = q0 + q0
+    _2q1 = q1 + q1
+    _2q2 = q2 + q2
+    _2q3 = q3 + q3
+    _2q0q1 = _2q0 * q1
+    _2q0q2 = _2q0 * q2
+    _2q0q3 = _2q0 * q3
+    _2q1q2 = _2q1 * q2
+    _2q1q3 = _2q1 * q3
+    _2q2q3 = _2q2 * q3
+    _2q0q0_1 = _2q0 * q0 - 1.0
+    A11 = _2q1 * q1 + _2q0q0_1
+    A22 = _2q2 * q2 + _2q0q0_1
+    A33 = _2q3 * q3 + _2q0q0_1
+    A12 = _2q1q2 - _2q0q3
+    A21 = _2q1q2 + _2q0q3
+    A13 = _2q1q3 + _2q0q2
+    A31 = _2q1q3 - _2q0q2
+    A23 = _2q2q3 - _2q0q1
+    A32 = _2q2q3 + _2q0q1
+    r = _stack(
+        [
+            _cat([A11, A12, A13], axis=-1),
+            _cat([A21, A22, A23], axis=-1),
+            _cat([A31, A32, A33], axis=-1),
+        ],
+        axis=-2,
+    )  # (...,3,3)
     return r
+
+
+def rpy2quat_inv(q, roll_ref_rad: _NDArr | float = 0.0):
+    r"""四元数反解欧拉角
+    $$
+    q=Q_z(yaw)\otimes Q_y(pitch) \otimes Q_x(roll)
+    $$
+
+    Args:
+        q (_NDArr): 规范四元数 shape: (..., 4).
+        roll_ref_rad (_NDArr | float, optional): 当前滚转角(死锁时备用) shape: (..., 1) or scalar. Defaults to 0.0.
+
+    Returns:
+        _NDArr: 欧拉角(滚转\phi,俯仰\theta,偏航\psi),单位:rad, shape (..., 3)
+    """
+    Reb = quat2mat(q)
+    rpy = rpy2mat_inv(Reb, roll_ref_rad)
+    return rpy
+
+
+def normalize(x: _NDArr, eps: float = 1e-9) -> _NDArr:
+    return x / _clip(_norm(x, 2, -1, True), eps, None)  # type: ignore
 
 
 def quat_Im(q) -> _FloatNDArr:
@@ -534,8 +612,7 @@ def quat_norm(q, axis=-1) -> _FloatNDArr:
     return norm(q, axis=axis, keepdims=True)
 
 
-def quat_normalize(q, axis=-1) -> _FloatNDArr:
-    return q / quat_norm(q, axis=axis)
+quat_normalize = normalize
 
 
 def quat_inv(q, axis=-1) -> _FloatNDArr:
@@ -562,19 +639,21 @@ def quat_from_im(im) -> _FloatNDArr:
     return _cat([_zeros_like(im[..., 0:1]), im], axis=-1)
 
 
-def quat_rot(q, v, normalize=True) -> _FloatNDArr:
+def quat_rotate(q: _NDArr, v: _NDArr) -> _FloatNDArr:
     r"""$Im(q*(0,v)*q^{-1})$"""
-    q = _asarray(q)
-    v = _asarray(v)
-    assert q.shape[-1] == 4
-    assert v.shape[-1] == 3
-    if normalize:
-        q = quat_normalize(q)
-    h = quat_from_im(v)
-    h = quat_prod(q, h)
-    h = quat_prod(h, quat_conj(q))
-    v = quat_Im(h)
-    return v
+    return _quat_rot(q, v)
+
+
+def _quat_rot(q: _NDArr, v: _NDArr):
+    reQ, imQ = _split(q, [1], -1)
+    _2q0 = reQ + reQ
+    _2qv = imQ + imQ
+    u = (
+        (_2q0 * reQ - 1.0) * v
+        + _2qv * (_sum(imQ * v, -1, keepdims=True))
+        + _2q0 * _cross(imQ, v)
+    )
+    return u
 
 
 def vec_cosine(
@@ -736,6 +815,7 @@ def calc_zem(
     if not _bkbn.isfinite(t_miss).all():
         t_miss
         idxs = _bkbn.where(~(_bkbn.isfinite(t_miss)))
+        raise ValueError(f"t_miss contains NaN or inf at {idxs}")
     t_miss = _clip(t_miss, tmin, tmax)  # 投影时间
     md = _norm(dp + dv * t_miss, axis=-1, keepdims=True)  # (...,n,m,1)
     return md, t_miss

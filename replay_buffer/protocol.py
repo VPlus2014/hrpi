@@ -15,5 +15,3 @@ class RolloutBatchProtocol(BatchProtocol, Protocol):
 
     act: torch.Tensor | np.ndarray
     act_log_prob: torch.Tensor | np.ndarray
-
-    

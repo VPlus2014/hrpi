@@ -2,7 +2,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Union, Sequence
 
 if TYPE_CHECKING:
-    from .models.base_model import BaseModel
+    from .simulators.base_model import BaseModel
 import gymnasium
 import torch
 from gymnasium.vector.async_vector_env import AsyncVectorEnv
@@ -27,7 +27,7 @@ class TrueSyncVecEnv(gymnasium.Env):
         num_envs: int,
         device: _DeviceLikeType,
         dtype: torch.dtype,
-        **kwargs, # TODO: 待定
+        **kwargs,  # TODO: 待定
     ):
         """
         张量化环境\

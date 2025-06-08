@@ -13,7 +13,7 @@ if TYPE_CHECKING:
     from torch.utils.tensorboard import SummaryWriter
 from functools import cached_property
 from environments.utils.space import get_spaces_shape, space2box, flatten, unflatten
-from environments.utils.math_torch import (
+from environments.utils.math_pt import (
     Qx,
     Qy,
     Qz,

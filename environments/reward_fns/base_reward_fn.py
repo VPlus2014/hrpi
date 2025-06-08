@@ -7,8 +7,8 @@ if TYPE_CHECKING:
         _EnvIndexType as _EnvIndexType,
     )
 
-    # from ..models.base_model import BaseModel, BaseFV
-    from ..models.aircraft import BaseAircraft as BaseAircraft
+    # from ..simulators.base_model import BaseModel, BaseFV
+    from ..simulators.aircraft import BaseAircraft as BaseAircraft
 
 import torch
 from abc import ABC, abstractmethod

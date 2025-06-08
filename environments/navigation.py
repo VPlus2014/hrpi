@@ -23,10 +23,10 @@ from gymnasium import spaces
 from typing import Any, Sequence
 from collections import OrderedDict
 from pathlib import Path
-from .models.base_model import BaseModel
-from .models.aircraft import BaseAircraft, PointMassAircraft, PDOF6Plane
+from .simulators.base_model import BaseModel
+from .simulators.aircraft import BaseAircraft, PointMassAircraft, PDOF6Plane
 from .utils.space import space2box, flatten, unflatten
-from .utils.math_torch import (
+from .utils.math_pt import (
     B01toI,
     quat_enu_ned,
     quat_rotate,
@@ -84,8 +84,10 @@ class NavigationEnv(TrueSyncVecEnv):
         dtype=torch.float64,
         np_float=np.float32,
         out_torch=False,  # reset/step 输出格式, 0->numpy.ndarray, 1->torch.Tensor
-        logconfig: LogConfig | None = None,  # 日志配置(1 env: 1 logger) None-> 采纳 logname
-        logname: str | None = None, # 日志名称(1 env: 1 logger) None-> default logger
+        logconfig: (
+            LogConfig | None
+        ) = None,  # 日志配置(1 env: 1 logger) None-> 采纳 logname
+        logname: str | None = None,  # 日志名称(1 env: 1 logger) None-> default logger
         debug=False,  # 调试模式
         version="2.0",
         easy_gen=False,
@@ -222,7 +224,7 @@ class NavigationEnv(TrueSyncVecEnv):
         tas = Vmax + _0f
         # 创建飞机模型
         pln = PointMassAircraft(
-            id=0x10086,
+            acmi_id=0x10086,
             acmi_name="F-16C-52",
             call_sign="agent",
             acmi_color="Red",
@@ -331,7 +333,7 @@ class NavigationEnv(TrueSyncVecEnv):
         alt0 = self.alt0
         tas = Vmax + _0f
         self.aircraft = pln = PDOF6Plane(
-            id=0x10086,
+            acmi_id=0x10086,
             acmi_name="J-10",
             call_sign="agent",
             acmi_color="Red",
@@ -596,7 +598,9 @@ class NavigationEnv(TrueSyncVecEnv):
             self.cur_nav_LOS_azimuth,
             self.cur_nav_LOS_elevation,
             self.cur_nav_dist,
-        ) = torch.split(ned2aer(self.cur_nav_LOS), [1, 1, 1], dim=-1)
+        ) = torch.chunk(
+            ned2aer(self.cur_nav_LOS), 3, dim=-1
+        )  # (...,1)
 
     def _cast_out(self, data: torch.Tensor, accept=True) -> torch.Tensor | NDArray:
         if not self.out_torch and accept:
@@ -633,7 +637,7 @@ class NavigationEnv(TrueSyncVecEnv):
 
                 aircraft_state = ObjectState(
                     sim_time_s=self.sim_time_s[idx_rcd].item(),
-                    name=acmi_id(int(pln.id[idx_rcd].item())),
+                    name=acmi_id(int(pln.acmi_id[idx_rcd].item())),
                     attr=AircraftAttr(
                         Color=pln.acmi_color,
                         TAS="{:.2f}".format(pln.tas(idx_rcd).item()),

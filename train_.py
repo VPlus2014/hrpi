@@ -155,10 +155,11 @@ def main():
                 vf_coef=0.5,
                 # max_grad_norm=1.0,
             ),
-        ).with_actor_factory_default(
+        )
+        .with_actor_factory_default(
             hidden_sizes=(128, 128),
-        ).with_critic_factory_default
-        .with_model_factory_default(hidden_sizes=(64, 64))
+        )
+        .with_critic_factory_default.with_model_factory_default(hidden_sizes=(64, 64))
         .with_epoch_train_callback(EpochTrainCallbackDQNSetEps(0.3))
         .with_epoch_test_callback(EpochTestCallbackDQNSetEps(0.0))
         .with_epoch_stop_callback(EpochStopCallbackRewardThreshold(195))
