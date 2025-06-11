@@ -346,7 +346,7 @@ def missile_regen(
             assert parent_pos is not None
             assert parent_rpy is not None
             assert parent_vel is not None
-            parent_id_ =int(grp.acmi_parent.view(-1, 1)[index, 0].item())
+            parent_id_ = int(grp.acmi_parent.view(-1, 1)[index, 0].item())
             msg_parent = f"parent={format_id(parent_id_)}"
             ego_pos_ = torch.asarray(parent_pos, dtype=th_float, device=device).reshape(
                 1, -1

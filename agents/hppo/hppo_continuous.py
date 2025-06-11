@@ -10,7 +10,7 @@ from gymnasium import spaces
 from torch.utils.data.sampler import BatchSampler, SubsetRandomSampler
 
 if TYPE_CHECKING:
-    from torch.utils.tensorboard import SummaryWriter
+    from torch.utils.tensorboard.writer import SummaryWriter
 from functools import cached_property
 from environments.utils.space import get_spaces_shape, space2box, flatten, unflatten
 from environments.utils.math_pt import (
@@ -21,7 +21,7 @@ from environments.utils.math_pt import (
     quat_rotate_inv,
     quat_mul,
     lerp,
-    nlerp,
+    quat_slerp,
     herp,
     aer2ned,
 )

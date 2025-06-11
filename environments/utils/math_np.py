@@ -272,7 +272,7 @@ def rpy2mat(rpy, axis=-1) -> _FloatNDArr:
         axis=axis,
     )
     r = r3 @ r2 @ r1
-    return r # type: ignore
+    return r  # type: ignore
 
 
 def rpy2mat_inv(Reb, roll_ref_rad: _InArrOrNum = 0.0, eps=1e-4):
@@ -285,7 +285,7 @@ def rpy2mat_inv(Reb, roll_ref_rad: _InArrOrNum = 0.0, eps=1e-4):
         rpy: (roll,pitch,yaw), shape=(...,3)
     """
     Reb = _asarray(Reb)
-    assert Reb.shape[-2:] == (3, 3), "expected matrix shape (...,3,3), got {}".format(
+    assert Reb.shape[-2:] == (3, 3), "expected matrix shape=(...,3,3), got {}".format(
         Reb.shape
     )
 
@@ -580,7 +580,7 @@ def rpy2quat_inv(q, roll_ref_rad: _NDArr | float = 0.0):
         roll_ref_rad (_NDArr | float, optional): 当前滚转角(死锁时备用) shape: (..., 1) or scalar. Defaults to 0.0.
 
     Returns:
-        _NDArr: 欧拉角(滚转\phi,俯仰\theta,偏航\psi),单位:rad, shape (..., 3)
+        _NDArr: 欧拉角(滚转\phi,俯仰\theta,偏航\psi),单位:rad, shape=(..., 3)
     """
     Reb = quat2mat(q)
     rpy = rpy2mat_inv(Reb, roll_ref_rad)
@@ -733,7 +733,7 @@ def enu2nue(xyz, axis=-1) -> _FloatNDArr:
     return xyz
 
 
-def affcmb(alpha, a, b):
+def affcmb(a, b, alpha):
     r"""
     $(1-\alpha) * a + \alpha * b$
     """
@@ -741,7 +741,7 @@ def affcmb(alpha, a, b):
     return a + alpha * (b - a)
 
 
-def affcmb_inv(y, a, b):
+def affcmb_inv(a, b, y):
     r"""
     get \alpha such that $y = (1-\alpha) * a + \alpha * b$
     """

@@ -37,12 +37,12 @@ def affcmb(w, a, b):
     $$
 
     Args:
-        w: Weights for the affine combination, shape (..., 1).
-        a: First scalar or tensor, shape (..., dims).
-        b: Second scalar or tensor, shape (..., dims).
+        w: Weights for the affine combination, shape=(..., 1).
+        a: First scalar or tensor, shape=(..., dims).
+        b: Second scalar or tensor, shape=(..., dims).
 
     Returns:
-        Affine combination of a and b, shape (..., dims).
+        Affine combination of a and b, shape=(..., dims).
     """
     return a + (b - a) * w
 
@@ -52,9 +52,9 @@ def affcmb_inv(y, a, b):
     仿射组合的逆运算
 
     Args:
-        y: a+w*(b-a), shape (..., 1)
-        a: 端点1, shape (..., dims)
-        b: 端点2, shape (..., dims)
+        y: a+w*(b-a), shape=(..., 1)
+        a: 端点1, shape=(..., dims)
+        b: 端点2, shape=(..., dims)
 
     Returns:
         w: 仿射系数
@@ -318,11 +318,11 @@ def normalize(x: torch.Tensor, eps: float = 1e-9) -> torch.Tensor:
     """Normalizes a given input tensor to unit length.
 
     Args:
-        x: Input tensor of shape (N, dims).
+        x: Input tensor of shape=(N, dims).
         eps: A small value to avoid division by zero. Defaults to 1e-9.
 
     Rets:
-        Normalized tensor of shape (N, dims).
+        Normalized tensor of shape=(N, dims).
     """
     return _normalize(x)
 
@@ -666,9 +666,9 @@ def rpy2mat(
     R = R_z(\psi) R_y(\theta) R_x(\phi)
     $$
     Args:
-        rpy (torch.Tensor): (滚转\psi,俯仰\theta,偏航\phi),unit:rad, shape (..., 3)
+        rpy (torch.Tensor): (滚转\psi,俯仰\theta,偏航\phi),unit:rad, shape=(..., 3)
     Returns:
-        torch.Tensor: 旋转矩阵, shape (..., 3, 3)
+        torch.Tensor: 旋转矩阵, shape=(..., 3, 3)
     """
     return _rpy2mat(rpy)
 
@@ -677,10 +677,10 @@ def rpy2mat_inv(Reb: torch.Tensor, roll_ref_rad: torch.Tensor | float = 0.0):
     """
     rpy2mat 的逆映射，当发生万向节死锁时，需要给出 roll_ref_rad
     Args:
-        Reb (torch.Tensor): 旋转矩阵, shape (..., 3, 3)
-        roll_ref_rad (torch.Tensor | float): 滚转角参考值, 单位: rad, shape (..., 1) 或标量
+        Reb (torch.Tensor): 旋转矩阵, shape=(..., 3, 3)
+        roll_ref_rad (torch.Tensor | float): 滚转角参考值, 单位: rad, shape=(..., 1) 或标量
     """
-    assert Reb.shape[-2:] == (3, 3), "expected matrix shape (...,3,3), got {}".format(
+    assert Reb.shape[-2:] == (3, 3), "expected matrix shape=(...,3,3), got {}".format(
         Reb.shape
     )
     if not isinstance(roll_ref_rad, torch.Tensor):
@@ -715,7 +715,7 @@ def rpy2quat_inv(
         roll_ref_rad (torch.Tensor | float, optional): 当前滚转角(死锁时备用) shape: (..., 1) or scalar. Defaults to 0.0.
 
     Returns:
-        torch.Tensor: 欧拉角(滚转\phi,俯仰\theta,偏航\psi),单位:rad, shape (..., 3)
+        torch.Tensor: 欧拉角(滚转\phi,俯仰\theta,偏航\psi),单位:rad, shape=(..., 3)
     """
     Reb = _quat2mat(q)
     rpy = rpy2mat_inv(Reb, roll_ref_rad)

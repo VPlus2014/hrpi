@@ -55,15 +55,15 @@ class BaseMissile(BaseModel):
         """目标NED速度, shape: (N,3)"""
         #
         self.distance = torch.full(_shape + [1], 2000e3, device=device, dtype=dtype)
-        """最新弹目距离 unit: m shape (N, 1)"""
+        """最新弹目距离 unit: m shape=(N, 1)"""
         self.miss_distance = torch.full(
             _shape + [1], 2000e3, device=device, dtype=dtype
         )
-        """脱靶量 unit: m shape (N, 1)"""
+        """脱靶量 unit: m shape=(N, 1)"""
         self.distance_history = torch.full(
             _shape + [10], 2000e3, device=device, dtype=dtype
         )
-        """最近若干次弹目距离 unit: m; shape (N, T)"""
+        """最近若干次弹目距离 unit: m; shape=(N, T)"""
 
         self._result = torch.zeros(_shape + [1], device=device, dtype=torch.int64)
         """导弹命中状态"""

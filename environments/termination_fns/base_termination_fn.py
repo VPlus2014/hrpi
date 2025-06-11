@@ -17,14 +17,10 @@ class BaseTerminationFn(ABC):
         pass
 
     @abstractmethod
-    def forward(
-        self, env: CUDAVecEnv, plane: BaseAircraft, **kwargs
-    ) -> torch.Tensor:
+    def forward(self, env: CUDAVecEnv, plane: BaseAircraft, **kwargs) -> torch.Tensor:
         pass
 
-    def __call__(
-        self, env: CUDAVecEnv, plane: BaseAircraft, **kwargs
-    ) -> torch.Tensor:
+    def __call__(self, env: CUDAVecEnv, plane: BaseAircraft, **kwargs) -> torch.Tensor:
         rst = self.forward(env, plane, **kwargs)
         shape = rst.shape
         assert shape == (env.num_envs, 1), (

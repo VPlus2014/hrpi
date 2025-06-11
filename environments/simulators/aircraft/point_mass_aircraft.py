@@ -128,15 +128,13 @@ class PointMassAircraft(BaseAircraft):
         if not isinstance(action, torch.Tensor):
             action = torch.tensor(action, device=self.device, dtype=self.dtype)
 
-        thrust_cmd, alpha_cmd, mu_cmd = torch.chunk(
-            action, 3, dim=-1
-        )  # (...,1)
+        thrust_cmd, alpha_cmd, mu_cmd = torch.chunk(action, 3, dim=-1)  # (...,1)
 
         mu_d = mu_cmd * _PI  # 期望滚转角
         alpha_d = affcmb(
-            2 * alpha_cmd + 1, -self._alpha_max, self._alpha_max
+            -self._alpha_max, self._alpha_max, 2 * alpha_cmd + 1
         )  # 期望迎角
-        thrust_d = affcmb(2 * thrust_cmd + 1, self._T_min, self._T_max)  # 期望推力
+        thrust_d = affcmb(self._T_min, self._T_max, 2 * thrust_cmd + 1)  # 期望推力
 
         self._Td.copy_(thrust_d)
         self._alpha_d.copy_(alpha_d)

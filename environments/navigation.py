@@ -372,13 +372,13 @@ class NavigationEnv(CUDAVecEnv):
             obs_space["nx"] = spaces.Box(
                 low=pln._nx_min, high=pln._nx_max, shape=(1,), dtype=np_float
             )  # 切向过载
-        if pln._ny_min != pln._ny_max:
+        if pln._ny_max > 0:
             obs_space["ny"] = spaces.Box(
-                low=pln._ny_min, high=pln._ny_max, shape=(1,), dtype=np_float
+                low=-pln._ny_max, high=pln._ny_max, shape=(1,), dtype=np_float
             )
         if pln._nz_down_max != pln._nz_up_max:
             obs_space["nz"] = spaces.Box(
-                low=pln._nz_down_max, high=pln._nz_up_max, shape=(1,), dtype=np_float
+                low=-pln._nz_down_max, high=pln._nz_up_max, shape=(1,), dtype=np_float
             )  # 法向过载
 
         obs_space["dmu"] = spaces.Box(
@@ -422,9 +422,9 @@ class NavigationEnv(CUDAVecEnv):
         TODO: 增加连续性约束，例如相邻点距、曲率，在约束下快速生成
 
         Returns:
-            navigation_points: shape (nenvs, N+horizon-1, 3).
+            navigation_points: shape=(nenvs, N+horizon-1, 3).
 
-            navigation_point_index: shape (nenvs, 1, 3)
+            navigation_point_index: shape=(nenvs, 1, 3)
         """
         device = self.device  # @generate_navigation_points
         dtype = self.dtype  # @generate_navigation_points
@@ -449,17 +449,17 @@ class NavigationEnv(CUDAVecEnv):
         elif version <= "2.0":
             Rmax = self._region_diam * 0.5
             r = affcmb(
-                rng.random(size=(nenvs, num, 1)),
                 self.waypoints_R_ratio_min * Rmax,
                 self.waypoints_R_ratio_max * Rmax,
+                rng.random(size=(nenvs, num, 1)),
             )
             dae = affcmb(
-                rng.random(size=(nenvs, num, 2)),
                 self.waypoints_dR_ratio_min / Rmax,
                 self.waypoints_dR_ratio_max / Rmax,
+                rng.random(size=(nenvs, num, 2)),
             )
-            dae[:, 0, 0] = affcmb(rng.random(size=(nenvs,)), np.pi, 2 * np.pi)
-            dae[:, 0, 1] = affcmb(rng.random(size=(nenvs,)), -np.pi * 0.5, np.pi * 0.5)
+            dae[:, 0, 0] = affcmb(np.pi, 2 * np.pi, rng.random(size=(nenvs,)))
+            dae[:, 0, 1] = affcmb(-np.pi * 0.5, np.pi * 0.5, rng.random(size=(nenvs,)))
             for i in range(1, num):
                 dae[..., i, :] += dae[..., i - 1, :]
             az, el = np.split(dae, 2, axis=-1)
@@ -539,16 +539,16 @@ class NavigationEnv(CUDAVecEnv):
             selected_points = torch.gather(
                 self.navigation_points, dim=1, index=self.cur_nav_point_index
             ).squeeze(1)
-            aer = ned2aer(selected_points[env_indices] - pln.position_e(env_indices))
+            aer = ned2aer(selected_points[env_indices] - pln.position_e()[env_indices])
             # print("aer: ", aer)
             azimuth = aer[..., 0:1]
             elevation = aer[..., 1:2]
             pln.set_gamma(
-                elevation * affcmb(torch.rand_like(azimuth), -2, 2),
+                elevation * affcmb(-2, 2, torch.rand_like(azimuth)),
                 env_indices,
             )
             pln.set_chi(
-                azimuth * affcmb(torch.rand_like(azimuth), -2, 2),
+                azimuth * affcmb(-2, 2, torch.rand_like(azimuth)),
                 env_indices,
             )
             pln._ppgt_rpy_ew2Qew(env_indices)
@@ -586,7 +586,7 @@ class NavigationEnv(CUDAVecEnv):
             index=self.cur_nav_point_index,
         ).squeeze(
             -2
-        )  # 当前需要到达的导航点坐标, shape (nenvs,3)
+        )  # 当前需要到达的导航点坐标, shape=(nenvs,3)
 
         self.cur_nav_LOS = (
             self.cur_nav_pos - pln.position_e()

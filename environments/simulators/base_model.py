@@ -66,7 +66,7 @@ class BaseModel(ABC):
             所有非标量数据都是矩阵;
         Args:
             sim_step_size_ms (int, optional): 仿真步长, 单位:ms. Defaults to 1.
-            group_shape (int|Sequence[int], optional): 组容量N/形状(N1,...,Nn), Defaults to 1.
+            group_shape=(int|Sequence[int], optional): 组容量N/形状(N1,...,Nn), Defaults to 1.
             device (torch.device, optional): 所在torch设备. Defaults to torch.device("cpu").
             dtype (torch.dtype, optional): torch浮点类型. Defaults to torch.float32.
             use_gravity (bool, optional): 是否启用重力(无则不支持计算重力). Defaults to True.
@@ -373,19 +373,19 @@ class BaseModel(ABC):
         self._sim_time_ms[batch_index] += self._sim_step_size_ms
 
     def is_ready(self) -> torch.Tensor:
-        """判断sims是否就绪, shape (...,N,1)"""
+        """判断sims是否就绪, shape=(...,N,1)"""
         return self.status == self.STATUS_INACTIVATE
 
     def is_alive(self) -> torch.Tensor:
-        """判断sims是否运行, shape (...,N,1)"""
+        """判断sims是否运行, shape=(...,N,1)"""
         return self.status == self.STATUS_ALIVE
 
     def is_dying(self) -> torch.Tensor:
-        """判断sims是否即将死亡, shape (...,N,1)"""
+        """判断sims是否即将死亡, shape=(...,N,1)"""
         return self.status == self.STATUS_DYING
 
     def is_dead(self) -> torch.Tensor:
-        """判断sims是否死亡, shape (...,N,1)"""
+        """判断sims是否死亡, shape=(...,N,1)"""
         return self.status == self.STATUS_DEAD
 
     def Q_eb(self) -> torch.Tensor:

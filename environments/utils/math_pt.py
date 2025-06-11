@@ -21,6 +21,7 @@ _sin = _bkbn.sin
 _cos = _bkbn.cos
 _atan2 = _bkbn.atan2
 _asin = _bkbn.asin
+_acos = _bkbn.acos
 _where = _bkbn.where
 _abs = _bkbn.abs
 _pow = _bkbn.pow
@@ -39,7 +40,7 @@ _Tensor = torch.Tensor
 _T = TypeVar("_T", _Tensor, torch.NumberType, float, int)
 
 
-def affcmb(w, a, b):
+def affcmb(a, b, w):
     """Affine combination of two tensors.
 
     $$
@@ -47,27 +48,27 @@ def affcmb(w, a, b):
     $$
 
     Args:
-        w: Weights for the affine combination, shape (..., 1).
-        a: First scalar or tensor, shape (..., dims).
-        b: Second scalar or tensor, shape (..., dims).
+        a: First scalar or tensor, shape=(...,d).
+        b: Second scalar or tensor, shape=(...,d).
+        w: Weights for the affine combination, shape=(..., 1|dims).
 
     Returns:
-        Affine combination of a and b, shape (..., dims).
+        Affine combination of a and b, shape=(...,d).
     """
     return a + (b - a) * w
 
 
-def affcmb_inv(y, a, b):
+def affcmb_inv(a, b, y):
     """
     仿射组合的逆运算
 
     Args:
-        y: a+w*(b-a), shape (..., 1)
-        a: 端点1, shape (..., dims)
-        b: 端点2, shape (..., dims)
+        a: First scalar or tensor, shape=(...,d).
+        b: Second scalar or tensor, shape=(...,d).
+        y: a+w*(b-a), shape=(..., 1)
 
     Returns:
-        w: 仿射系数
+        w: 仿射系数, shape=(...,d).
     """
     m = b - a
     y_ = y - a
@@ -101,12 +102,12 @@ def _quat_split_keepdim(q: _Tensor):
 
 @torch.jit.script
 def _quat_re(q: _Tensor):
-    return q.split([1, 3], -1)[0]  # [...,0:1] 不能jit
+    return q.split([1, 3], -1)[0]  # [...,0:1] 写法不能jit
 
 
 @torch.jit.script
 def _quat_im(q: _Tensor):
-    return q.split([1, 3], -1)[1]  # # [...,1:4] 不能jit
+    return q.split([1, 3], -1)[1]  # # [...,1:4] 写法不能jit
 
 
 @torch.jit.script
@@ -330,12 +331,14 @@ def quat_normalize(q: _Tensor) -> _Tensor:
 def normalize(x: _Tensor, eps: float = 1e-9) -> _Tensor:
     """Normalizes a given input tensor to unit length.
 
+    约定: $0_d^0=0_d$
+
     Args:
-        x: Input tensor of shape (N, dims).
+        x: Input tensor of shape=(N, d).
         eps: A small value to avoid division by zero. Defaults to 1e-9.
 
     Rets:
-        Normalized tensor of shape (N, dims).
+        Normalized tensor of shape=(N, d).
     """
     return _normalize(x)
 
@@ -677,9 +680,9 @@ def rpy2mat(
     R = R_z(\psi) R_y(\theta) R_x(\phi)
     $$
     Args:
-        rpy (_NDArr): (滚转\psi,俯仰\theta,偏航\phi),unit:rad, shape (..., 3)
+        rpy (_NDArr): (滚转\psi,俯仰\theta,偏航\phi),unit:rad, shape=(..., 3)
     Returns:
-        _NDArr: 旋转矩阵, shape (..., 3, 3)
+        _NDArr: 旋转矩阵, shape=(..., 3, 3)
     """
     return _rpy2mat(rpy)
 
@@ -688,10 +691,10 @@ def rpy2mat_inv(Reb: _Tensor, roll_ref_rad: _Tensor | float = 0.0) -> _Tensor:
     """
     rpy2mat 的逆映射，当发生万向节死锁时，需要给出 roll_ref_rad
     Args:
-        Reb (_NDArr): 旋转矩阵, shape (..., 3, 3)
-        roll_ref_rad (_NDArr | float): 滚转角参考值, 单位: rad, shape (..., 1) 或标量
+        Reb (_NDArr): 旋转矩阵, shape=(..., 3, 3)
+        roll_ref_rad (_NDArr | float): 滚转角参考值, 单位: rad, shape=(..., 1) 或标量
     """
-    assert Reb.shape[-2:] == (3, 3), "expected matrix shape (...,3,3), got {}".format(
+    assert Reb.shape[-2:] == (3, 3), "expected matrix shape=(...,3,3), got {}".format(
         Reb.shape
     )
     if not isinstance(roll_ref_rad, _Tensor):
@@ -724,7 +727,7 @@ def rpy2quat_inv(q: _Tensor, roll_ref_rad: _Tensor | float = 0.0) -> _Tensor:
         roll_ref_rad (_NDArr | float, optional): 当前滚转角(死锁时备用) shape: (..., 1) or scalar. Defaults to 0.0.
 
     Returns:
-        _NDArr: 欧拉角(滚转\phi,俯仰\theta,偏航\psi),单位:rad, shape (..., 3)
+        _NDArr: 欧拉角(滚转\phi,俯仰\theta,偏航\psi),单位:rad, shape=(..., 3)
     """
     Reb = _quat2mat(q)
     rpy = rpy2mat_inv(Reb, roll_ref_rad)
@@ -988,35 +991,91 @@ def herp(
     return position
 
 
-def lerp(v_0: _Tensor, v_1: _Tensor, t: _Tensor) -> _Tensor:
-    v_0 = v_0.unsqueeze(1).repeat(1, t.shape[-1], 1)
-    v_1 = v_1.unsqueeze(1).repeat(1, t.shape[-1], 1)
-    t = t.unsqueeze(-1).repeat(1, 1, v_0.shape[-1])
+def lerp(
+    a: _Tensor,
+    b: _Tensor,
+    t: _Tensor,
+) -> _Tensor:
+    r"""
+    线性插值 $t\mapsto a+t*(b-a)$
 
-    v_t = (1 - t) * v_0 + t * v_1
+    Args:
+        a (_Tensor): (...,d), 端点1
+        b (_Tensor): (...,d), 端点2
+        t (_Tensor): (...,N), N 为插值的点数
+
+    Returns:
+        c: (...,N,d) 插值后的点
+    """
+    assert len(a.shape) == len(b.shape) == len(t.shape)
+    assert a.shape[-1] == b.shape[-1]
+    # 别 reapeat 了，自动 broadcast 少1/3时间
+    a = a.unsqueeze(-2)  # (...,1,d)
+    b = b.unsqueeze(-2)  # (...,1,d)
+    t = t.unsqueeze(-1)  # (...,N,1)
+    v_t = a + t * (b - a)
     return v_t
 
 
-def nlerp(q_0: _Tensor, q_1: _Tensor, t: _Tensor) -> _Tensor:
+def nlerp(a: _Tensor, b: _Tensor, t: _Tensor) -> _Tensor:
+    r"""
+    规范化线性插值 $t\mapsto \frac{1}{\|(1-t)a+t*b\|} [(1-t)a+t*b]$
+    Args:
+        a (_Tensor): (...,d), 端点1
+        b (_Tensor): (...,d), 端点2
+        t (_Tensor): (...,N), N 为插值的点数
+
+    Returns:
+        c: (...,N,d) 线性插值后的单位向量(线性插值产生的零向量仍是零向量)
     """
-    args:
-        q_0: shape: [n, 4]
-        q_1: shape: [n, 4]
-        t: shape: [n, m]
+    c = lerp(a, b, t)  # (...,N,d)
+    c = normalize(c)
+    return c
 
-    rets:
-        q_t: shape: [n, m, 4]
-    """
 
-    # 钝角检测, 解决双倍覆盖问题
-    dot = torch.einsum("ij,ij->i", [q_0, q_1])
-    indices = torch.where(dot < 0)[0]
-    q_1[indices] *= -1
+# !@torch.jit.script
+def _quat_slerp(q_0: _Tensor, q_1: _Tensor, t: _Tensor) -> _Tensor:
+    q_0 = quat_normalize(q_0)
+    q_1 = quat_normalize(q_1)
+    dq = quat_mul(q_1, quat_inv(q_0))  # (...,4)
 
-    q_t = lerp(q_0, q_1, t)
+    # 钝角检测, 解决过渡点的双倍覆盖问题
+    re_dq = quat_re(dq)  # (...,1)
+    dq = _where(re_dq < 0, -dq, dq)  # ->\alpha\in[0,pi]
 
-    q_t = normalize(q_t)  # TODO:注意可能会导致问题，有待验证
+    re_dq, im_dq = dq.split([1, 3], -1)
+    ha = _acos(re_dq)
+    sinha = _norm(im_dq, p=2, dim=-1, keepdim=True)
+    eps = 1e-6
+    tag = sinha < eps
+    ax = _where(tag, _zeros_like(im_dq), im_dq / sinha.clip(eps, None))  # (...,3)
+
+    tha = ha * t  # (...,N)
+    tha = tha.unsqueeze(-1)  # (...,N,1)
+    costha = _cos(tha)  # (...,N,1)
+    sintha = _sin(tha)  # (...,N,1)
+    ax = ax.unsqueeze(-2)  # (...,1,3)
+
+    tdq = _cat([costha, sintha * ax], -1)  # (...,N,4)
+    q_0 = q_0.unsqueeze(-2)  # (...,1,4)
+
+    q_t = quat_mul(tdq, q_0)  # (...,N,4)
     return q_t
+
+
+def quat_slerp(q_0: _Tensor, q_1: _Tensor, t: _Tensor) -> _Tensor:
+    r"""
+
+    规范四元数插值 $t\mapsto (q_1 q_0^{-1})^t q_0, t\in[0,1]$
+
+    args:
+        t: shape: (...,4)
+        q_0: shape: (...,4)
+        q_1: shape: (...,N), N 为插值的点数
+    rets:
+        q_t: shape: (...,N,4), 插值后的规范四元数
+    """
+    return _quat_slerp(q_0, q_1, t)
 
 
 _DynamicsFuncType: TypeAlias = Union[
@@ -1320,7 +1379,8 @@ def _demo():  # 自测
     test_quat_mul = False
     test_quat_rot = False
     test_zem = False
-    test_block = True
+    test_block = False
+    test_quat_interp = True
 
     rpy_low = torch.reshape(
         torch.asarray(
@@ -1352,7 +1412,7 @@ def _demo():  # 自测
 
         if test_rpy2mat:
             rpy = affcmb(
-                torch.rand([*bsz, 3], dtype=th_float, device=device), rpy_low, rpy_high
+                rpy_low, rpy_high, torch.rand([*bsz, 3], dtype=th_float, device=device)
             )
             roll = rpy[..., 0:1]
             Reb = rpy2mat(rpy)
@@ -1362,7 +1422,7 @@ def _demo():  # 自测
 
         if test_rpy2quat:
             rpy = affcmb(
-                torch.rand([*bsz, 3], dtype=th_float, device=device), rpy_low, rpy_high
+                rpy_low, rpy_high, torch.rand([*bsz, 3], dtype=th_float, device=device)
             )
             q = rpy2quat(rpy)
             roll = rpy[..., 0:1]
@@ -1394,6 +1454,16 @@ def _demo():  # 自测
             u2 = quat_rotate(qconj, v)
             rer = (u - u2).abs().max()
             assert rer < 1e-4, "Quaternion rotation error is too large."
+
+        if test_quat_interp:
+            B = 10
+            N = 5
+            q1 = quat_normalize(torch.rand([*bsz, B, 4], dtype=th_float, device=device))
+            q2 = quat_normalize(torch.rand([*bsz, 1, 4], dtype=th_float, device=device))
+            t = torch.rand([*bsz, B, N], dtype=th_float, device=device)
+            qt = quat_slerp(q1, q2, t)
+            assert qt.shape == (*bsz, B, N, 4), "quat_interp error."
+            assert is_normalized(qt).all(), "Quaternion normalization error."
 
         # v2 = quat_rotate_inverse(q, u)
         # Rq = quat2rotmat(q)
