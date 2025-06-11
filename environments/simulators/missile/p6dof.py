@@ -26,7 +26,7 @@ from environments.utils.math_pt import (
 )
 
 
-class PDOF6Missile(BaseMissile):
+class P6DOFMissile(BaseMissile):
 
     def __init__(
         self,
@@ -260,7 +260,7 @@ class PDOF6Missile(BaseMissile):
         los_e = self._all_los_e  # (...,N,n,3)
         dij = torch.norm(los_e, -1, keepdim=True).clip(1e-3)  # (...,N,n,1)
         cosa = (los_e * iw_e).sum(-1, keepdim=True) / dij  # (...,N,n,1)
-        mask = self._all_los_mask # (...,N,n,1)
+        mask = self._all_los_mask  # (...,N,n,1)
         in_ball = (dij < self._det_rmax) & mask  # 在探测球内
         in_detcone = cosa > self._det_cosa  # 在探测锥内 (...,N,n,1)
         in_trkcone = cosa > self._trk_cosa  # 在跟踪锥内
@@ -270,7 +270,7 @@ class PDOF6Missile(BaseMissile):
         self._ntrk = self._cantrk.sum(-2, True)  # 小视场的目标数 (...,N,1,1)
         self._anydet = anydet = self._candet.any(-2, True)  # 大视场有目标 (...,N,1,1)
         self._anytrk = anytrk = self._cantrk.any(-2, True)  # 小视场有目标 (...,N,1,1)
-        if anydet.any():
+        if self.DEBUG:
             anydet
 
         w1 = torch.where(anytrk, cantrk, candet)  # 视野过滤(>where) (N,n,1)

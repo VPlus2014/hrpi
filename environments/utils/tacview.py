@@ -1,4 +1,4 @@
-# 250608 taview 可视化扩展
+# 250611 taview 可视化扩展
 from __future__ import annotations
 from datetime import datetime
 from enum import Enum
@@ -148,12 +148,12 @@ def acmi_head(reftime: datetime):
     return head_acmi
 
 
-def acmi_timestamp(sec: float) -> str:
-    """ACMI时间戳格式"""
+def format_timestamp(sec: float) -> str:
+    """格式化ACMI时间戳"""
     return f"#{sec:.2f}"
 
 
-def acmi_id(id: int | str) -> str:
+def format_id(id: int | str) -> str:
     r"""
     格式化为16进制大写 Tacview Object ID\
     注意, 0x/0 开头会导致 Tacview 解析失败
@@ -167,39 +167,39 @@ def acmi_id(id: int | str) -> str:
     return id_hex
 
 
-def acmi_destroy(id: str):
+def format_destroy(id: str):
     """坠毁事件"""
     msg = f"0,Event=Destroyed|{id}|"
     return msg
 
 
-def acmi_remove(id: str):
+def format_remove(id: str):
     """删除对象"""
     msg = f"-{id}"
     return msg
 
 
-def acmi_bookmark(msg: str):
+def format_bookmark(msg: str):
     return f"0,Event=Bookmark|{msg}"
 
 
-def unit2acmi(
+def format_unit(
     id: str | int,
     lat: float,  # deg
     lon: float,  # deg
     alt: float,  # m
-    roll: float|Any = None,  # deg
-    pitch: float|Any = None,  # deg
-    yaw: float|Any = None,  # deg
-    Name: str|Any = None,
-    Color: str|Any = None,
-    Type: str|Any = None,
-    CallSign: str|Any = None,
-    TAS: float|str|Any = None,  # 真空速
-    Speed: float|str|Any = None,  # 航速
-    Parent: str|Any = None,  # 父对象 ID
-    Next: str|Any = None,  # 下一个导航点 ID
-    **etc: str|Any,  # 其他元数据
+    roll: float | Any = None,  # deg
+    pitch: float | Any = None,  # deg
+    yaw: float | Any = None,  # deg
+    Name: str | Any = None,
+    Color: str | Any = None,
+    Type: str | Any = None,
+    CallSign: str | Any = None,
+    TAS: float | str | Any = None,  # 真空速
+    Speed: float | str | Any = None,  # 航速
+    Parent: str | Any = None,  # 父对象 ID
+    Next: str | Any = None,  # 下一个导航点 ID
+    **etc: str | Any,  # 其他元数据
 ) -> str:
     """
     格式化对象信息
@@ -232,7 +232,7 @@ def unit2acmi(
         pose_.append(rpy_str)
     pose_str = "T=" + ("|".join(pose_))
 
-    id_hex = acmi_id(id)
+    id_hex = format_id(id)
     state_str = [id_hex, pose_str]
     _meta = [
         ("Name", Name),
@@ -271,12 +271,12 @@ class TacviewRecorder:
         self.__is_reset = False
         self._fn: "Path|None" = None
 
-        self.format_id = acmi_id
-        self.format_unit = unit2acmi
-        self.format_time = acmi_timestamp
-        self.event_destroy = acmi_destroy
-        self.event_bookmark = acmi_bookmark
-        self.event_remove = acmi_remove
+        self.format_id = format_id
+        self.format_unit = format_unit
+        self.format_time = format_timestamp
+        self.format_destroy = format_destroy
+        self.format_bookmark = format_bookmark
+        self.format_remove = format_remove
 
     def reset_local(
         self,
@@ -306,7 +306,6 @@ class TacviewRecorder:
         timeout: float = 5.0,
         reference_time: "datetime|None" = None,
         encoding=_RT_ENCODING,
-        reuse_server=False,
     ):
         logr = self._logr
         suc = False
@@ -316,33 +315,36 @@ class TacviewRecorder:
         head_acmi = acmi_head(reference_time)
 
         ip, port = addr
-        if self._srvr_sock:
-            self.close()  # 在 bind 前需要关闭已有连接
-        reuse_server = reuse_server and self._srvr_sock
+
+        self.close()  # 在 bind 前需要关闭已有连接
+
         clnt_sock = None
-        if reuse_server:
-            srvr_sock = self._srvr_sock
-        else:
-            srvr_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            srvr_sock.bind(addr)
-            srvr_sock.listen(1)  # 最多排队的 clients 连接数
-            logr.debug(f"Server listening on {ip}:{port}, timeout={timeout}s")
-        assert srvr_sock
+        srvr_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         srvr_sock.settimeout(timeout)  # timeout for connection
+        srvr_sock.bind(addr)
+        srvr_sock.listen(1)  # 最多排队的 clients 连接数
+        logr.debug(f"Server listening on {ip}:{port}, timeout={timeout}s")
 
         # [1]等待连接
         logr.info(
             f"请在 {float(timeout):.0f}s 内打开 Tacview*高级版*->记录->实时遥测, 填写以下内容:\n"
             f"数据记录器地址: {ip}\n"
-            f"数据记录器端口: {port}\n"
+            f"数据记录器端口: {port}\n",
         )
+        # funcname = "{}.{}".format(self.__class__.__name__, self.reset_remote.__name__)
+        # print(
+        #     "若发生 RealTimeTelemetry 连接失败, 请依次执行以下步骤:",
+        #     "1. Tacview->记录->实时遥测->断开连接",
+        #     f"2. 等待本次 {funcname} 结束",
+        #     "3. Tacview->记录->实时遥测->连接",
+        #     f"4. 重新调用 {funcname}",
+        #     sep="\n",
+        # )
         try:  # TCP
             clnt_sock, clnt_addr = srvr_sock.accept()
             logr.debug(f"created Tacview client on {clnt_addr}")
-            suc = True
         except socket.timeout as e:
             logr.warning(f"no client: {e}")
-            suc = False
 
         if clnt_sock:
             # [2]握手(只需按协议发送消息即可)
@@ -358,38 +360,27 @@ class TacviewRecorder:
                     f"received handshake data:\n{len(msg2)},{msg2}"
                 )  # 后两行依次是在 Tacview 界面中填写的 用户名,密码哈希值
                 # (可选)解析数据并进行用户名、密码校验
-                suc = True
                 logr.debug("handshake done")
             except socket.timeout as e:
                 logr.warning("handshake timeout")
                 clnt_sock.close()
                 clnt_sock = None
-                suc = False
 
         if clnt_sock:
             try:
                 clnt_sock.send(head_acmi.encode(encoding))
                 logr.debug(f"sent acmi header")
-                suc = True
             except Exception as e:
                 logr.warning(f"send acmi header error: {e}")
-                suc = False
                 clnt_sock.close()
                 clnt_sock = None
         #
         if clnt_sock:
-            if reuse_server:
-                pass
-            else:
-                self.close()
             self._srvr_sock = srvr_sock
             self._clnt_sock = clnt_sock
             self.__is_connected = True
             suc = True
-        else:  # 失败
-            if not reuse_server:
-                srvr_sock.close()  # 解除临时 srvr 绑定
-        return clnt_sock is not None
+        return suc
 
     def is_connected(self):
         return self.__is_connected
@@ -397,43 +388,48 @@ class TacviewRecorder:
     def add(self, line: str):
         self._buf.append(line)
 
-    def merge(self):
-        r"""合并缓存消息,末尾加\n"""
+    def merge(self, sep="\n", clear=True):
+        r"""合并缓存消息"""
         buf = self._buf
         if len(buf):
-            buf.append("")  # 末尾加空行
-            msg = "\n".join(self._buf)
-            self._buf.clear()
+            msg = sep.join(self._buf)
+            if clear:
+                self.clear_buf()
+        else:
+            msg = ""
         return msg
 
-    def write_local(self, msg: str, encoding=_FILE_ENCODING):
-        r"""直接写入消息到文件(不额外加\n)"""
-        logr = self._logr
-        assert self.__is_reset
-        if len(msg):
-            assert self._fn is not None
-            with open(self._fn, "a", encoding=encoding) as f:
-                f.write(msg)
+    def clear_buf(self):
+        self._buf.clear()
 
-    def write_remote(self, msg: str, encoding=_RT_ENCODING):
-        r"""直接写入消息到客户端(不额外加\n)"""
+    def _check_reset(self):
+        assert self.__is_reset, "not reset"
+
+    def write_local(self, msg: str, endl="\n", encoding=_FILE_ENCODING):
+        r"""直接写入消息到文件"""
+        self._check_reset()
+        assert self._fn is not None
+        with open(self._fn, "a", encoding=encoding) as f:
+            f.write(msg + endl)
+
+    def write_remote(self, msg: str, endl="\n", encoding=_RT_ENCODING):
+        r"""直接写入消息到客户端"""
         logr = self._logr
         suc = False
-        if self.__is_connected and len(msg):
-            try:
-                data = msg.encode(encoding)
-                assert self._clnt_sock
-                self._clnt_sock.send(data)
-                suc = True
-            except socket.timeout as e:
-                logr.debug(f"send timeout")
-            except ConnectionError as e:
-                logr.warning(f"connection error: {e}")
-                self.__is_connected = False
-            except Exception as e:
-                logr.warning(f"send error: {e}\n{traceback.format_exc()}")
-        else:
-            suc = False
+        self._check_reset()
+        assert self.__is_connected, "not connected"
+        try:
+            data = (msg + endl).encode(encoding)
+            assert self._clnt_sock
+            self._clnt_sock.send(data)
+            suc = True
+        except socket.timeout as e:
+            logr.debug(f"send timeout")
+        except ConnectionError as e:
+            logr.warning(f"connection error: {e}")
+            self._close_client()
+        except Exception as e:
+            logr.warning(f"send error: {e}\n{traceback.format_exc()}")
         return suc
 
     def _close_client(self):

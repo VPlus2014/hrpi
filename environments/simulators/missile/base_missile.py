@@ -140,34 +140,28 @@ class BaseMissile(BaseModel):
             & (self._result == self.RESULT_NONE)
             & (d <= self.kill_radius)
         )
-        if torch.any(hit):
-            indices = torch.where(hit)[0]
+        self._result = torch.where(hit, self.RESULT_HIT, self._result)
+        # if torch.any(hit):
 
-            self._result[indices] = BaseMissile.RESULT_HIT
-        # return indices
-
-    def is_hit(self, env_indices: _SupportedIndexType | None) -> torch.Tensor:
-        """是否命中"""
-        env_indices = self.proc_index(env_indices)
-        return self._result[env_indices] == BaseMissile.RESULT_HIT
+    def is_hit(self) -> torch.Tensor:
+        """是否命中, shape: (...,N,1)"""
+        return self._result == BaseMissile.RESULT_HIT
 
     def try_miss(self):
         flag_0 = self.is_alive() & (self._result == self.RESULT_NONE)
-        flag_1 = self.sim_time_s() > self._t_thrust_s
+        flag_1 = self.sim_time_s() > self._t_thrust_s  # 滑翔段
 
         d = self.distance  # (N,1)
         self.distance_history = torch.roll(self.distance_history, shifts=-1, dims=-1)
         self.distance_history[..., -1:] = d
 
-        incs = self.distance_history.diff(dim=-1)
-        flag_2 = (incs > 0).all(dim=1)  # 距离一直增大
-        flag = flag_0 & flag_1 & flag_2
+        # incs = self.distance_history.diff(dim=-1)
+        is_closing = d < self.distance_history[..., 0:1]  # 严格接近
+        miss = flag_0 & flag_1 & ~is_closing
 
-        if torch.any(flag):
-            indices = torch.where(flag)[0]
-            self._result[indices] = BaseMissile.RESULT_MISSED
-            # self.miss_distance[indices] = d[indices]
+        # if torch.any(miss):
+        self._result = torch.where(miss, BaseMissile.RESULT_MISSED, self._result)
 
-    def is_missed(self, env_indices: _SupportedIndexType | None) -> torch.Tensor:
-        env_indices = self.proc_index(env_indices)
-        return self._result[env_indices] == BaseMissile.RESULT_MISSED
+    def is_missed(self) -> torch.Tensor:
+        """是否脱靶, shape: (...,N,1)"""
+        return self._result == BaseMissile.RESULT_MISSED

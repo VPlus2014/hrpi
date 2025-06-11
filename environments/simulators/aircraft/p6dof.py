@@ -27,7 +27,7 @@ from ...utils.math_pt import (
 _PI = math.pi
 
 
-class PDOF6Plane(BaseAircraft):
+class P6DOFPlane(BaseAircraft):
     def __init__(
         self,
         nx_max: float = 1.0,

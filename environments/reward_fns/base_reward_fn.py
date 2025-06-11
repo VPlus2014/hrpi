@@ -3,7 +3,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from ...environments.proto4venv import (
-        TrueSyncVecEnv as TrueSyncVecEnv,
+        CUDAVecEnv as CUDAVecEnv,
         _EnvIndexType as _EnvIndexType,
     )
 
@@ -25,7 +25,7 @@ class BaseRewardFn(ABC):
     @abstractmethod
     def reset(
         self,
-        env: TrueSyncVecEnv,
+        env: CUDAVecEnv,
         env_indices: _EnvIndexType = None,
         **kwargs,
     ) -> None:
@@ -35,7 +35,7 @@ class BaseRewardFn(ABC):
     @abstractmethod
     def forward(
         self,
-        env: TrueSyncVecEnv,
+        env: CUDAVecEnv,
         plane: BaseAircraft,
         **kwargs,
     ) -> torch.Tensor:
@@ -44,7 +44,7 @@ class BaseRewardFn(ABC):
 
     def __call__(
         self,
-        env: TrueSyncVecEnv,
+        env: CUDAVecEnv,
         plane: BaseAircraft,
         **kwargs,
     ) -> torch.Tensor:

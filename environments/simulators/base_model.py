@@ -57,8 +57,8 @@ class BaseModel(ABC):
         acmi_name: str | Sequence[str] = "",
         acmi_color: str | Sequence[str] = "Red",
         acmi_type: str | Sequence[str] = "",
-        acmi_parent: str | Sequence[str] = "",
         call_sign: str | Sequence[str] = "",
+        acmi_parent: torch.Tensor | int = 0,
     ) -> None:
         """
         质点模型组 BaseModel
@@ -78,11 +78,11 @@ class BaseModel(ABC):
             lat0 (torch.Tensor | float, optional): 坐标原点纬度, 单位:deg. float|shape: (...,N,1)
             lon0 (torch.Tensor | float, optional): 坐标原点经度, 单位:deg. float|shape: (...,N,1)
             alt0 (torch.Tensor | float, optional): 坐标原点高度, 单位:m. float|shape: (...,N,1)
-            acmi_id (torch.Tensor | int): Tacview Object ID (整数形式).
+            acmi_id (torch.Tensor | int, optional): Tacview Object ID (整数形式).
             acmi_color (Literal["Red", "Blue"] | str, optional): Tacview Color. Defaults to "Red".
             acmi_name (str, Sequence[str], optional): Tacview 模型名(必须数据库中可检索否则无法正常渲染)
             acmi_type (str, Sequence[str], optional): Tacview Object Type(符合ACMI标准). Defaults to "".
-            acmi_parent (str, Sequence[str], optional): Tacview 父对象 ID. Defaults to "".
+            acmi_parent (torch.Tensor | int, optional): Tacview 父对象 ID. Defaults to "".
             call_sign (str, Sequence[str], optional): Tacview 呼号. Defaults to "".
             vis_radius (float, optional): 可视半径. Defaults to 1.0.
         """
@@ -232,9 +232,13 @@ class BaseModel(ABC):
         """Tacview 对象类型, shape: (...,N,1) NDArray[str]"""
         self.acmi_type[..., 0] = acmi_type
 
-        self.acmi_parent = np.empty(_shape_head + (1,), dtype=object)
-        """Tacview 父对象 ID, shape: (...,N,1) NDArray[str]"""
-        self.acmi_parent[..., 0] = acmi_parent
+        self.acmi_parent = torch.empty(
+            _shape_head + (1,), device=_device, dtype=torch.int64
+        )
+        """Tacview 父对象 ID, shape: (...,N,1) Tensor[int64]"""
+        self.acmi_parent.copy_(
+            torch.asarray(acmi_parent, device=_device, dtype=torch.int64)
+        )
 
         self.call_sign = np.empty(_shape_head + (1,), dtype=object)
         """Tacview 呼号, shape: (...,N,1) NDArray[str]"""
@@ -351,12 +355,12 @@ class BaseModel(ABC):
     ):
         """设置仿真运行状态"""
         dst_idx = self.proc_index(dst_idx)
-        self.status[dst_idx] = status
+        self.status[dst_idx, :] = status
 
     def activate(self, batch_index: _SupportedIndexType | None):
         """运行状态->激活"""
         batch_index = self.proc_index(batch_index)
-        self.status[batch_index] = BaseModel.STATUS_ALIVE
+        self.status[batch_index, :] = self.STATUS_ALIVE
 
     @abstractmethod
     def run(self, batch_index: _SupportedIndexType | None):
@@ -436,7 +440,7 @@ class BaseModel(ABC):
         self._blh[batch_index, 2:3] = (
             self._blh0[batch_index, 2:3] - self._pos_e[batch_index, 2:3]
         )
-    
+
     def _ppgt_alt2z(self, batch_index: _SupportedIndexType | None):
         """海拔->Z坐标"""
         batch_index = self.proc_index(batch_index)

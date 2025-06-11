@@ -28,7 +28,7 @@ from contextlib import ContextDecorator
 
 from tools import init_seed, as_np, as_tsr, ConextTimer
 
-from environments.simulators.aircraft.pdof6plane import PDOF6Plane as Plane
+from environments.simulators.aircraft.p6dof import P6DOFPlane as Plane
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 
 

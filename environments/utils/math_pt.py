@@ -1097,7 +1097,7 @@ def modin(x: _Tensor, a: _Tensor | float, m: _Tensor | float):
     return y
 
 
-def delta_reg(a: _Tensor, b: _Tensor, r: _Tensor | float = _PI):
+def delta_reg(a: _Tensor, b: _Tensor, r: _Tensor | float):
     r"""
     计算 a-b 在 R=(-r,r] 上的最小幅度值
 
@@ -1203,33 +1203,40 @@ def _los_is_visible_v1(
 ):
     r"""
     $$
-    visible_i:= m_i\land \bigwedge_{j\neq i}(m_j\to (I_1 p_i)\cap \bar B(p_j,r_j)=\emptyset)
+    F(i,j):=(I_1 p_i)\cap \bar B(p_j,r_j)=\emptyset\\
+    visible_i:= m_i\land \bigwedge_{j\neq i}(m_j\to F(i,j))\\
+    
+    G(i,j):= (i\neq j)\land(m_i\land m_j)\land F(i,j)
+    mixed_i:= \bigvee_{j\neq i} G(i,j)\land G(j,i)
     $$
 
     """
     n = los.shape[-2]
     _0f3 = _zeros_like(los)
     #
+    mi = mask.unsqueeze(-2)  # (...,N,1,1)
+    mj = mask.unsqueeze(-3)  # (...,1,N,1)
     dij = calc_zem(_0f3, los, los, _0f3, 0.0, 1.0)[
         0
-    ]  # (...,N,N) |p_j-\Pi_{I_1 p_i}p_j|
+    ]  # (...,N,N,1) |p_j-\Pi_{I_1 p_i}p_j|
     rj = rball.unsqueeze(-3)  # (...,1,N,1)
-    fij = dij > rj  # (...,N,N) (I_1 p_i)\cap\bar B(p_j,r_j)=\emptyset
+    fij = dij > rj  # (...,N,N,1) (I_1 p_i)\cap\bar B(p_j,r_j)=\emptyset
     #
     _I = torch.eye(n, device=los.device, dtype=torch.bool).view(
         [1] * len(los.shape[:-2]) + [n, n, 1]
-    )
-    mj = mask.unsqueeze(-3)  # (...,1,N,1)
-    ifthen = _I | (~mj) | fij
-    mi = mask.unsqueeze(-2)  # (...,N,1,1)
-    vis = mi & ifthen  # (...,N,N,1)
-    vi = vis.all(dim=-2)  # (...,N,1)
+    )  # \neg (i\neq j)
+    vis = mask & ((_I | (~mj) | fij).all(dim=-2))  # (...,N,1)
     #
-    bij = (~_I) & mi & (~fij) & mj  # (...,N,N,1) i blocked by j
-    b1i = bij.any(-2)  # (...,N,1)
-    b2i = bij.any(-3)  # (...,N,1)
-    fus = b1i & b2i  # (...,N,1)
-    return vi, fus
+    bij = (~_I) & (mi & mj) & (~fij)  # (...,N,N,1) i blocked by j
+    # version 1.0
+    # b1i = bij.any(-2)  # (...,N,1)
+    # b2i = bij.any(-3)  # (...,N,1)
+    # mix = b1i & b2i  # (...,N,1)
+    # version 1.1
+    bji = bij.transpose(-2, -3)
+    mixij = bij & bji
+    mix = mixij.any(-2)  # (...,N,1)
+    return vis, mix
 
 
 def _los_is_visible_v2(
@@ -1263,7 +1270,7 @@ def los_is_visible(
             Defaults to None->默认全部可用.
     Returns:
         visible (_Tensor): 视线是否不受阻, shape=(...,N,1)
-        fused (_Tensor): 混杂, shape=(...,N,1)
+        mixed (_Tensor): 是否混淆(对visible=False的元素用), shape=(...,N,1)
     """
     if mask is None:
         # mask = _ones(len(los.shape) * [1], dtype=torch.bool, device=los.device)

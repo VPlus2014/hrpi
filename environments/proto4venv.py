@@ -13,7 +13,7 @@ _EnvIndexType = Union[torch.Tensor, Sequence[int], slice, None]
 _DeviceLikeType = Union[torch.device, str, int]
 
 
-class TrueSyncVecEnv(gymnasium.Env):
+class CUDAVecEnv(gymnasium.Env):
     name: str
 
     # 并仿截断/终止处理机制, 参照 gymnasium.vector.sync_vector_env.SyncVectorEnv
@@ -30,7 +30,7 @@ class TrueSyncVecEnv(gymnasium.Env):
         **kwargs,  # TODO: 待定
     ):
         """
-        张量化环境\
+        张量化环境(类似 NVIDIA Isaac Gym)\
         约定:
             当发生截断/终止时, step 返回的
         """

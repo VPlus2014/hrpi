@@ -24,7 +24,7 @@ from typing import Any, Sequence
 from collections import OrderedDict
 from pathlib import Path
 from .simulators.base_model import BaseModel
-from .simulators.aircraft import BaseAircraft, PointMassAircraft, PDOF6Plane
+from .simulators.aircraft import BaseAircraft, PointMassAircraft, P6DOFPlane
 from .utils.space import space2box, flatten, unflatten
 from .utils.math_pt import (
     B01toI,
@@ -41,13 +41,13 @@ from .utils.tacview_render import ObjectState, AircraftAttr, WaypointAttr, get_o
 from .utils.tacview import ACMI_Types
 from .reward_fns import *
 from .termination_fns import *
-from .proto4venv import TrueSyncVecEnv
-from .utils.tacview import acmi_id
+from .proto4venv import CUDAVecEnv
+from .utils.tacview import format_id
 
 _LOGR = logging.getLogger(__name__)
 
 
-class NavigationEnv(TrueSyncVecEnv):
+class NavigationEnv(CUDAVecEnv):
     metadata: dict[str, Any] = {
         "render_fps": 25,  # 渲染频率, 单位:1/仿真sec
         "render_modes": [
@@ -332,7 +332,7 @@ class NavigationEnv(TrueSyncVecEnv):
         Vmin = Vmax = 340
         alt0 = self.alt0
         tas = Vmax + _0f
-        self.aircraft = pln = PDOF6Plane(
+        self.aircraft = pln = P6DOFPlane(
             acmi_id=0x10086,
             acmi_name="J-10",
             call_sign="agent",
@@ -637,7 +637,7 @@ class NavigationEnv(TrueSyncVecEnv):
 
                 aircraft_state = ObjectState(
                     sim_time_s=self.sim_time_s[idx_rcd].item(),
-                    name=acmi_id(int(pln.acmi_id[idx_rcd].item())),
+                    name=format_id(int(pln.acmi_id[idx_rcd].item())),
                     attr=AircraftAttr(
                         Color=pln.acmi_color,
                         TAS="{:.2f}".format(pln.tas(idx_rcd).item()),
@@ -773,7 +773,7 @@ class NavigationEnv(TrueSyncVecEnv):
             obs_dict["navigation_points"] = tuple(navigation_points)
         elif version == "2.0":
             self._make_game_v2
-            pln = cast(PDOF6Plane, pln)
+            pln = cast(P6DOFPlane, pln)
             obs_dict["los_b"] = quat_rotate_inv(
                 pln.Q_ew(env_indices), self.cur_nav_LOS[env_indices]
             )
