@@ -43,7 +43,7 @@ def main():
     ][-1]
     render_dir = Path(__file__).parent / "tmp"
 
-    from environments.navigation import NavigationEnv
+    from environments_th.navigation import NavigationEnv
 
     envcls = NavigationEnv
     for out_numpy in [True]:

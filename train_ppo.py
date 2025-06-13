@@ -12,7 +12,7 @@ import torch
 from pathlib import Path
 from torch.utils.tensorboard.writer import SummaryWriter
 from tqdm import tqdm
-from environments import NavigationEnv, EvasionEnv
+from environments_th import NavigationEnv, EvasionEnv
 from agents import PPOContinuous
 from decimal import getcontext
 from tools import as_np, as_tsr, init_seed, ConextTimer
@@ -21,7 +21,7 @@ from tools import as_np, as_tsr, init_seed, ConextTimer
 def main():
     getcontext().prec = 4
 
-    from environments.utils import log_ext
+    from environments_th.utils import log_ext
 
     ROOT_DIR = Path(__file__).parent
     nenvs = 4000

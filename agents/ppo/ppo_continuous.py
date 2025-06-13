@@ -36,7 +36,7 @@ from replay_buffer.replaybuffer import ReplayBuffer
 from replay_buffer.protocol import RolloutBatchProtocol
 from replay_buffer.trajbuffer import RETrajReplayBuffer
 
-from environments.utils.space import normalize, affcmb
+from environments_th.utils.space import normalize, affcmb
 
 
 class PPOContinuous(Agent):

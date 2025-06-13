@@ -2,7 +2,7 @@ import onnx
 import torch
 import torch.nn as nn
 from pathlib import Path
-from environments import EvasionEnv
+from environments_th import EvasionEnv
 from torch.utils.tensorboard import SummaryWriter
 
 if __name__ == "__main__":

@@ -3,9 +3,9 @@ import torch
 from pathlib import Path
 from torch.utils.tensorboard.writer import SummaryWriter
 from tqdm import tqdm
-from environments import NavigationEnv
+from environments_th import NavigationEnv
 from agents import HPPOContinuous
-from environments.utils.tacview_render import ObjectState, AircraftAttr, WaypointAttr
+from environments_th.utils.tacview_render import ObjectState, AircraftAttr, WaypointAttr
 
 
 as_tsr = torch.asarray

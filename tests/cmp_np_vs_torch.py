@@ -23,188 +23,75 @@ import os
 from pathlib import Path
 import numpy as np
 import torch
-from environments.utils import math_np, math_pt
-
-
-class PDOF6Group:
-    def __init__(
-        self,
-        env_size: int = 1,
-        group_size: int = 1,
-        device: str = "cpu",
-        np_float=np.float32,
-        tsr_float: torch.dtype = torch.float32,
-        use_numpy: bool = True,
-    ):
-        self._device = _device = torch.device(device)
-        _bkbn = np if use_numpy else torch
-        self._use_numpy = use_numpy
-        if use_numpy:
-            _1f1 = np.ones([env_size, group_size, 1], np_float)
-            _0f1 = np.zeros([env_size, group_size, 1], np_float)
-            _0f3 = np.zeros([env_size, group_size, 3], np_float)
-            _0f4 = np.zeros([env_size, group_size, 4], np_float)
-            _e1 = np.concatenate([_1f1, _0f1, _0f1], axis=-1)
-            _e2 = np.concatenate([_0f1, _1f1, _0f1], axis=-1)
-            _e3 = np.concatenate([_0f1, _0f1, _1f1], axis=-1)
-        else:
-            _1f1 = torch.ones(
-                [env_size, group_size, 1], device=_device, dtype=tsr_float
-            )
-            _0f1 = torch.zeros(
-                [env_size, group_size, 1], device=_device, dtype=tsr_float
-            )
-            _0f3 = torch.zeros(
-                [env_size, group_size, 3], device=_device, dtype=tsr_float
-            )
-            _0f4 = torch.zeros(
-                [env_size, group_size, 4], device=_device, dtype=tsr_float
-            )
-            _e1 = torch.cat([_1f1, _0f1, _0f1], dim=-1)
-            _e2 = torch.cat([_0f1, _1f1, _0f1], dim=-1)
-            _e3 = torch.cat([_0f1, _0f1, _1f1], dim=-1)
-        self._e1 = _e1
-        self._e2 = _e2
-        self._e3 = _e3
-        self._1f1 = _1f1
-        self._0f1 = _0f1
-
-        self._pos_e = _0f3 + 0.0
-        self._vel_e = _0f3 + 0.0
-        self._tas = _0f1 + 0.0
-        self._Qew = _0f4 + 0.0
-        self._rpy = _0f3 + 0.0
-        self._g = _0f3 + 9.8
-        self._g_e = _e3 * self._g
-
-        self._ic_pos = _0f3 + 0.0
-        self._ic_tas = _0f1 + 300
-        self._ic_rpy = _0f3 + 0.0
-
-        self._t = _0f1 + 0.0
-
-        self._n_w = _0f3 + 0.0
-        self._dmu = _0f1 + 0.0
-        self._bkbn = math_np if use_numpy else math_pt
-        self.use_gravity = True
-
-        self._Vmin = 100
-        self._Vmax = 1000
-
-    def reset(self):
-        bkbn = self._bkbn
-        self._pos_e[...] = self._ic_pos
-        self._tas[...] = self._ic_tas
-        self._rpy[...] = self._ic_rpy
-        self._Qew[...] = bkbn.rpy2quat(self._rpy)
-        self._t[...] = 0.0
-        self._ppgt()
-
-    def run(self):
-        bkbn = math_np if self._use_numpy else math_pt
-        h = 1e-3
-        pos, tas, Qeb, roll = bkbn.ode_rk45(
-            self._f,
-            self._t,
-            [self._pos_e, self._tas, self._Qew, self._rpy[..., [0]]],
-            h,
-        )
-        self._t[...] += h
-        self._pos_e[...] = pos
-        self._Qew[...] = Qeb
-        self._rpy[..., 0:1] = roll
-
-        Qeb = bkbn.normalize(Qeb)
-        tas = bkbn._clip(tas, self._Vmin, None)
-        self._ppgt()
-
-    def _f(self, t, X):
-        bkbn = self._bkbn
-        use_np = self._use_numpy
-        p_e, tas, Qew, mu = X
-
-        dmu = self._dmu
-        n_w = self._n_w
-        _0 = self._0f1
-
-        a_w = self._g * n_w  # 过载加速度风轴分量
-        if self.use_gravity:
-            Qwe = bkbn.quat_conj(Qew)
-            a_w += bkbn.quat_rotate(Qwe, self._g_e)
-
-        # 旋转角速度
-        tas = bkbn._clip(tas, self._Vmin, self._Vmax)  # 防止过零
-        Vinv = 1 / tas
-        dot_tas = a_w[..., 0:1]
-        a_vy = a_w[..., 1:2]
-        a_vz = a_w[..., 2:3]
-        P = dmu
-        Q = -a_vz * Vinv
-        R = a_vy * Vinv
-        if use_np:
-            h_w = np.concatenate([_0, P, Q, R], axis=-1) * 0.5
-            v_w = np.concatenate([tas, _0, _0], axis=-1)
-        else:
-            h_w = torch.cat([_0, P, Q, R], dim=-1) * 0.5
-            v_w = torch.cat([tas, _0, _0], dim=-1)
-        dot_Qew = bkbn.quat_mul(Qew, h_w)
-
-        dot_p_e = bkbn.quat_rotate(Qew, v_w)  # 惯性速度
-
-        dotX = [dot_p_e, dot_tas, dot_Qew, dmu]
-        return dotX
-
-    def _ppgt(self):
-        bkbn = math_np if self._use_numpy else math_pt
-        self._rpy[...] = bkbn.rpy2quat_inv(self._Qew, self._rpy[..., [0]])
-        self._vel_e[...] = bkbn.quat_rotate(self._Qew, self._tas * self._e1)
+from environments_th.simulators.aircraft.p6dof import P6DOFPlane as P6DOFPlane_th
+from envs_np.simulators.aircraft.p6dof import P6DOFPlane as P6DOFPlane_np
 
 
 def test(
     use_np=True,
-    env_size=1,
-    group_size=1,
+    unit_num=1,
     device="cpu",
-    tsr_float=torch.float32,
-    np_float=np.float32,
+    tsr_float=torch.float64,
+    np_float=np.float64,
     max_episodes=100,
     max_steps=100,
     seed=0,
     use_tqdm=True,
     title="Test",
 ):
-    grp = PDOF6Group(
-        env_size=env_size,
-        group_size=group_size,
-        device=device,
-        np_float=np_float,
-        tsr_float=tsr_float,
-        use_numpy=use_np,
-    )
-    qbar = range(max_episodes)
+    rng = np.random.default_rng(seed)
+    if use_np:
+        grp = P6DOFPlane_np(
+            group_shape=(unit_num,),
+            device=device,
+            dtype=np_float,
+        )
+    else:
+        grp = P6DOFPlane_th(
+            group_shape=(unit_num,),
+            device=device,
+            dtype=tsr_float,
+        )
+    qbar = range(max_episodes * max_steps)
     if use_tqdm:
         qbar = tqdm(qbar)
         qbar.set_description(title)
-    for ep in qbar:
-        grp.reset()
-        for step in range(max_steps):
-            grp.run()
+    for i in qbar:
+        if i % max_steps == 0:
+            grp.reset(None)
+
+        grp.set_action(rng.random((unit_num, 4)))
+        grp.run(None)
+
+    del grp
 
 
 def main():
-    # 结论: 效率 Torch@CUDA >> Numpy > Torch@CPU
-    env_size = 256
-    group_size = 100
+    """
+    FPS实验:
+    unit_num    64      128*1   128*32  128*64  128*128 128*1024
+    Torch@CUDA  4e3     7e3     29e4    55e4    100e4*  590e4*
+    Torch@CPU   21e3    29e3    21e4    22e4    36e4    87e4
+    Numpy       44e3*   39e3*   42e4*   56e4*   49e4    36e4
+
+    结论:
+    中小规模用 Numpy, 大规模用 Torch@CUDA
+    """
+    unit_num = 128 * 64
+    # group_size = 1
+    max_episodes = 10
+    max_steps = 100
     config: dict[str, Any] = dict(
+        unit_num=unit_num,
         # device="cuda",
         tsr_float=torch.float64,
         np_float=np.float64,
-        env_size=env_size,
-        group_size=group_size,
         use_tqdm=True,
-        seed=0,
+        max_episodes=max_episodes,
+        max_steps=max_steps,
+        seed=int(time.time()),
     )
-    batch_size = env_size * group_size
+    total_steps = unit_num * max_steps * max_episodes
 
     for use_np, device in [
         (False, "cuda"),
@@ -215,15 +102,13 @@ def main():
         test(
             use_np=use_np,
             device=device,
-            max_episodes=10,
-            max_steps=100,
             title="{}@{}".format("Numpy" if use_np else "Torch", device),
             **config,
         )
         dt = time.time() - t0
         mode = {"use_numpy": use_np, "device": device}
-        fps = batch_size / max(dt, 1e-6)
-        print(f"Mode: {mode}, Time elapsed: {dt:.2f}s, FPS: {fps:.2f}")
+        fps = total_steps / max(dt, 1e-6)
+        print(f"Mode: {mode}, Time elapsed: {dt:.2f}s, Steps per second: {fps:.03g}\n")
     return
 
 
