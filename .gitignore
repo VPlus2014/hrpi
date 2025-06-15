@@ -1,8 +1,9 @@
 # Ignore the output directory
+__pycache__/
+
 /runs/
 /outputs/
 /results*/
+
 /tmp/
-test.py
-tmp_test.py
-__pycache__/
+tmp_*
