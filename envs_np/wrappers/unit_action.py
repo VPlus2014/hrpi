@@ -1,15 +1,16 @@
 from __future__ import annotations
 from typing import Sequence, cast, TYPE_CHECKING
 
-if TYPE_CHECKING:
-    from ..proto4venv # import torchSyncVecEnv
 from gymnasium import Wrapper, spaces
 import numpy as np
+
+if TYPE_CHECKING:
+    from gymnasium import Env
 
 
 class UnitActionWrapper(Wrapper):
 
-    def __init__(self, env: TorchSyncVecEnv):
+    def __init__(self, env: Env):
         """
         [-1,1]
 
@@ -23,12 +24,13 @@ class UnitActionWrapper(Wrapper):
             "Unsupported action space type:",
             type(src_space),
         )
-        np_float = cast(type[np.floating], src_space.dtype)
+        np_float = cast(type[np.floating], np.dtype(src_space.dtype).type)
         assert np_float in (np.float32, np.float64), (
             "Unsupported float type:",
             np_float,
         )
-        self._action_space = dst_space = spaces.Box(
+
+        self.action_space = dst_space = spaces.Box(
             low=-1,
             high=1,
             shape=src_space.shape,
@@ -36,16 +38,13 @@ class UnitActionWrapper(Wrapper):
         )
         self._low = dst_space.low.astype(np_float)
         self._high = dst_space.high.astype(np_float)
+        self._span = self._high - self._low
 
     def step(self, action: np.ndarray) -> tuple:
         """
         Args:
             action: np.ndarray, shape= (...,dimA)
         """
-        dimA = self._action_space.shape[0]
-        rst = self.env.step(ac)
+        act_ = ((action + 1) * 0.5) * self._span + self._low
+        rst = self.env.step(act_)
         return rst
-
-    def _d2c(self, action: np.ndarray) -> np.ndarray:
-        if not self._need_cvrt:
-            return action

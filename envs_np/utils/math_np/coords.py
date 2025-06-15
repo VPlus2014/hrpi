@@ -29,7 +29,7 @@ def _ned2aer(xyz: ndarray) -> ndarray:
     return cat([azi, elev, slantRange], axis=-1)
 
 
-def ned2aer(xyz: ndarray) -> ndarray:
+def ned2aer(xyz: ndarray) -> Float_NDArr:
     r"""求解 NED xyz 直角坐标对应的 方位角 azimuth, 俯仰角 elevation, 距离 r\
     即 (r,0,0) 依次 绕Z内旋 azimuth, 绕Y内旋 elevation 得到 (x,y,z), 右手定则
 
@@ -45,18 +45,17 @@ def ned2aer(xyz: ndarray) -> ndarray:
     return _ned2aer(xyz)
 
 
-def _aer2ned(aer: ndarray) -> ndarray:
-    az = aer[..., 0:1]
-    el = aer[..., 1:2]
-    r = aer[..., 2:3]  # (...,1)
+def _aer2ned(aer: ndarray) -> Float_NDArr:
+    az, el, r = unbind_keepdim(aer, -1)  # (...,1)
     rxy = r * cos(el)
     z = -r * sin(el)
     x = rxy * cos(az)
     y = rxy * sin(az)
-    return cat([x, y, z], axis=-1)
+    xyz = cat([x, y, z], axis=-1)
+    return cast(Float_NDArr, xyz)
 
 
-def aer2ned(aer: ndarray) -> ndarray:
+def aer2ned(aer: ndarray) -> Float_NDArr:
     """
     ned2aer 的逆映射
     Args:
@@ -69,10 +68,10 @@ def aer2ned(aer: ndarray) -> ndarray:
     return _aer2ned(aer)
 
 
-def _uvw2alpha_beta(uvw: ndarray, axis=-1):
-    assert uvw.shape[axis] == 3, f"uvw must be 3D in dim[{axis}]"
+def _uvw2alpha_beta(uvw: ndarray):
+    assert uvw.shape[-1] == 3, f"uvw must be 3D in last dim"
     uvw = normalize(uvw)
-    u, v, w = unbind_keepdim(uvw, axis)  # (...,1)
+    u, v, w = unbind_keepdim(uvw, -1)  # (...,1)
     alpha = atan2(w, u)  # (0,0)->0
     beta = asin(v)
     return alpha, beta
@@ -112,42 +111,42 @@ def quat_enu_ned() -> ndarray:
     )  # (4,)
 
 
-def ned2enu(xyz, axis=-1) -> ndarray:
+def ned2enu(xyz: ndarray, axis=-1) -> ndarray:
     xyz = asarray(xyz)
     n, e, d = unbind_keepdim(xyz, axis)  # (...,1)
     xyz = cat([e, n, -d], axis=axis)
     return xyz
 
 
-def enu2ned(xyz, axis=-1) -> ndarray:
+def enu2ned(xyz: ndarray, axis=-1) -> ndarray:
     xyz = asarray(xyz)
     e, n, u = unbind_keepdim(xyz, axis)  # (...,1)
     xyz = cat([n, e, -u], axis=axis)
     return xyz
 
 
-def nue2ned(xyz, axis=-1) -> ndarray:
+def nue2ned(xyz: ndarray, axis=-1) -> ndarray:
     xyz = asarray(xyz)
     n, u, e = unbind_keepdim(xyz, axis)  # (...,1)
     xyz = cat([n, e, -u], axis=axis)
     return xyz
 
 
-def ned2nue(xyz, axis=-1) -> ndarray:
+def ned2nue(xyz: ndarray, axis=-1) -> ndarray:
     xyz = asarray(xyz)
     n, e, d = unbind_keepdim(xyz, axis)  # (...,1)
     xyz = cat([n, -d, e], axis=axis)
     return xyz
 
 
-def nue2enu(xyz, axis=-1) -> ndarray:
+def nue2enu(xyz: ndarray, axis=-1) -> ndarray:
     xyz = asarray(xyz)
     n, u, e = unbind_keepdim(xyz, axis)  # (...,1)
     xyz = cat([e, n, u], axis=axis)
     return xyz
 
 
-def enu2nue(xyz, axis=-1) -> ndarray:
+def enu2nue(xyz: ndarray, axis=-1) -> ndarray:
     xyz = asarray(xyz)
     e, n, u = unbind_keepdim(xyz, axis)  # (...,1)
     xyz = cat([n, u, e], axis=axis)

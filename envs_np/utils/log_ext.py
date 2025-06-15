@@ -1,12 +1,12 @@
-# 250602 日志功能扩展
+# 250614 日志功能扩展
 from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 from datetime import datetime
-import logging
 import time
-
 import logging
+from logging import Logger, DEBUG, INFO, WARNING, ERROR, FATAL
+
 from pathlib import Path
 import sys
 
@@ -99,10 +99,11 @@ class LogConfig:
     file_append: bool = True
     """是否不覆盖写入, 默认为不覆盖"""
 
-    def remake(self):
+    def remake(self, echo=True):
         cfg = self.__dict__
         logr = reset_logger(**cfg)
-        logr.debug(("logger config:", cfg))
+        if echo:
+            logr.debug(("reset logger with config:", cfg))
         return logr
 
 

@@ -646,10 +646,10 @@ def euler_from_quat(q: ndarray, roll_ref_rad: ndarray | float = 0.0) -> ndarray:
     # q0, q1, q2, q3 = q.unbind(dim=-1)
     # # 隐患: 万向节死锁求解
 
-    # phi = torch.arctan2(2 * (q2 * q3 + q0 * q1), 1 - 2 * (q1 * q1 + q2 * q2))
-    # theta = torch.arcsin(torch.clamp(-2 * (q3 * q1 - q0 * q2), -1, 1))
-    # psi = torch.arctan2(2 * (q1 * q2 + q0 * q3), 1 - 2 * (q2 * q2 + q3 * q3))
+    # phi = np.arctan2(2 * (q2 * q3 + q0 * q1), 1 - 2 * (q1 * q1 + q2 * q2))
+    # theta = np.arcsin(np.clamp(-2 * (q3 * q1 - q0 * q2), -1, 1))
+    # psi = np.arctan2(2 * (q1 * q2 + q0 * q3), 1 - 2 * (q2 * q2 + q3 * q3))
 
-    # return torch.stack([phi, theta, psi], axis=-1)
+    # return np.stack([phi, theta, psi], axis=-1)
 
     return rpy2quat_inv(q, roll_ref_rad)

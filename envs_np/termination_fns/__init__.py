@@ -1,8 +1,6 @@
-from .base_termination_fn import BaseTerminationFn
-from .low_altitude_termination_fn import LowAltitudeTerminationFn
-from .navigation.low_tas_termination_fn import LowAirSpeedTerminationFn
-from .navigation.reach_navigation_point_max_num_termination_fn import (
-    ReachNavigationPointMaxNumTerminationFn,
-)
-from .timeout_termination_fn import TimeoutTerminationFn
-from .navigation.faraway import TC_FarAwayFromWaypoint
+from .proto4tc import BaseTerminationFn
+from .tc_low_altitude import TC_LowAltitude
+from .tc_low_tas import TC_LowTAS
+from .navigation.tc_reach_all import TC_ReachAllGoal
+from .tc_timeout import TC_Timeout
+from .navigation.tc_faraway import TC_AwayFromGoal

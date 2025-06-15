@@ -206,11 +206,11 @@ def main():  # 自测
     seed = int(time.time())
     rng = bkbn.random.default_rng(seed)
 
-    # torch.manual_seed(seed)
-    # torch.cuda.manual_seed(seed)
-    # torch.cuda.manual_seed_all(seed)
-    # torch.backends.cudnn.deterministic = True
-    # torch.backends.cudnn.benchmark = False
+    # np.manual_seed(seed)
+    # np.cuda.manual_seed(seed)
+    # np.cuda.manual_seed_all(seed)
+    # np.backends.cudnn.deterministic = True
+    # np.backends.cudnn.benchmark = False
 
     ntest = 100
     bsz = (64,)
@@ -250,11 +250,11 @@ def main():  # 自测
             n = 50
             m = 50
             d = 3
-            p1 = asarray(rng.normal(size=[*bsz, n, d]), dtype=np_float)
-            v1 = asarray(rng.normal(size=[*bsz, n, d]), dtype=np_float)
-            p2 = asarray(rng.normal(size=[*bsz, m, d]), dtype=np_float)
-            v2 = asarray(rng.normal(size=[*bsz, m, d]), dtype=np_float)
-            zem, tmiss = calc_zem(p1, v1, p2, v2)
+            p1 = asarray(rng.normal(size=[*bsz, n, 1, d]), dtype=np_float)
+            v1 = asarray(rng.normal(size=[*bsz, n, 1, d]), dtype=np_float)
+            p2 = asarray(rng.normal(size=[*bsz, 1, m, d]), dtype=np_float)
+            v2 = asarray(rng.normal(size=[*bsz, 1, m, d]), dtype=np_float)
+            zem, tmiss = calc_zem1(p1 - p2, v1 - v2)
 
         if test_rpy2mat:
             rpy = affcmb(

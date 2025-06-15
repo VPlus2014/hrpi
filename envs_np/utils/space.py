@@ -1,12 +1,14 @@
 from __future__ import annotations
+
 # import torch
 import numpy as np
 from gymnasium import spaces
 from collections import OrderedDict
 from typing import Any, Sequence, TypeVar
+from .math_np import affcmb, affcmb_inv
 
-_T_NDArr = TypeVar("_T_NDArr", np.ndarray, torch.Tensor)
-_T = TypeVar("_T")
+_T_NDArr = TypeVar("_T_NDArr", np.ndarray, np.ndarray)
+_T = TypeVar("_T", np.floating, np.integer, np.ndarray, int, float, bool)
 
 
 def get_spaces_shape(space: spaces.Space) -> int:
@@ -23,70 +25,107 @@ def get_spaces_shape(space: spaces.Space) -> int:
     raise NotImplementedError("type(space) {} is unsupported".format(type(space)))
 
 
-def space2box(space: spaces.Space, dtype=np.float32) -> spaces.Box:
-    def _get_value_bound(space: spaces.Space):
-        if isinstance(space, spaces.Discrete):
-            return (
-                np.array([space.start], dtype=dtype),
-                np.array([space.start + space.n - 1], dtype=dtype),
-            )
-        elif isinstance(space, spaces.Box):
-            return (space.low.astype(dtype), space.high.astype(dtype))
-        elif isinstance(space, spaces.Tuple):
-            low_list, high_list = [], []
-            for i in range(len(space)):
-                _min_ndarray, high_ndarray = _get_value_bound(space[i])
-                low_list.append(_min_ndarray)
-                high_list.append(high_ndarray)
-            return (
-                np.concatenate(low_list, axis=-1).astype(dtype),
-                np.concatenate(high_list, axis=-1).astype(dtype),
-            )
-        elif isinstance(space, spaces.Dict):
-            low_list, high_list = [], []
-            for key in space.keys():
-                _min_ndarray, high_ndarray = _get_value_bound(space[key])
-                low_list.append(_min_ndarray)
-                high_list.append(high_ndarray)
-            return (
-                np.concatenate(low_list, axis=-1).astype(dtype),
-                np.concatenate(high_list, axis=-1).astype(dtype),
-            )
-        else:
-            raise NotImplementedError
+def _get_value_bound(space: spaces.Space, dtype: type[np.floating] = np.float32):
+    if isinstance(space, spaces.Discrete):
+        return (
+            np.array([space.start], dtype=dtype),
+            np.array([space.start + space.n - 1], dtype=dtype),
+        )
+    elif isinstance(space, spaces.Box):
+        return (
+            space.low.astype(dtype).ravel(),  # (d,)
+            space.high.astype(dtype).ravel(),
+        )
+    elif isinstance(space, spaces.Tuple):
+        low_list, high_list = [], []
+        for i in range(len(space)):
+            low, high = _get_value_bound(space[i])
+            low_list.append(low)
+            high_list.append(high)
+        return (
+            np.concatenate(low_list, axis=-1).astype(dtype),
+            np.concatenate(high_list, axis=-1).astype(dtype),
+        )
+    elif isinstance(space, spaces.Dict):
+        low_list, high_list = [], []
+        for key in space.keys():
+            low, high = _get_value_bound(space[key])
+            low_list.append(low)
+            high_list.append(high)
+        return (
+            np.concatenate(low_list, axis=-1).astype(dtype),
+            np.concatenate(high_list, axis=-1).astype(dtype),
+        )
+    else:
+        raise NotImplementedError(
+            "unsupported space type", type(space), "@", _get_value_bound.__name__
+        )
 
-    low, high = _get_value_bound(space)
-    return spaces.Box(low, high)
+
+def space2box(space: spaces.Space, dtype: type[np.floating] = np.float32) -> spaces.Box:
+    low, high = _get_value_bound(space, dtype=dtype)  # (d,)
+    return spaces.Box(low, high, dtype=dtype)
 
 
 def flatten(
-    space: spaces.Space, data: np.number | torch.Tensor | Sequence | OrderedDict
-) -> torch.Tensor:
-    if isinstance(data, np.number) and isinstance(space, spaces.Discrete):
-        value_flattened = torch.asarray([data])
-    elif isinstance(data, torch.Tensor) and isinstance(space, spaces.Box):
-        value_flattened = data.reshape((-1,) + space.shape)
-    elif isinstance(data, Sequence) and isinstance(space, spaces.Tuple):
-        tensor_list: list[torch.Tensor] = []
-        assert len(data) == len(space)
-        for _value, _space in zip(data, space, strict=True):
-            _value_flattened = flatten(_space, _value)
-            tensor_list.append(_value_flattened)
-        value_flattened = torch.cat(tensor_list, axis=-1)
-    elif isinstance(data, OrderedDict) and isinstance(space, spaces.Dict):
-        tensor_list: list[torch.Tensor] = []
-        assert list(data.keys()) == list(space.keys())
-        for _value, space_value in zip(data.values(), space.values(), strict=True):
-            _value_flattened = flatten(space_value, _value)
-            tensor_list.append(_value_flattened)
+    space: spaces.Space,
+    data: np.number | np.ndarray | Sequence | OrderedDict | dict,
+) -> np.ndarray:
+    """
+    批量拉平
+    space 必须与 data 有相同的外层结构
+    Args:
+        space: 空间
+        data: 数据组
 
-        value_flattened = torch.cat(tensor_list, axis=-1)
+    Returns:
+        output: 拉平后的数组, shape=(batch_size, dim(flattened_space))
+    """
+    if isinstance(space, spaces.Discrete):
+        vec = np.asarray(data).reshape((-1, 1))
+    elif isinstance(space, spaces.MultiDiscrete):
+        assert len(space.nvec) == 1, (
+            "MultiDiscrete space must be 1D tensor, got",
+            len(space.nvec),
+        )
+        vec = np.asarray(data).reshape((-1, len(space.nvec)))
+    elif isinstance(space, spaces.Box):
+        assert len(space.shape) == 1, (
+            "Box space must be 1D tensor, got",
+            len(space.shape),
+        )
+        vec = np.asarray(data).reshape((-1,) + space.shape)
+    elif isinstance(space, spaces.Tuple):
+        tensor_list: list[np.ndarray] = []
+        assert isinstance(data, (list, tuple)), (
+            "data must be list or tuple",
+            type(data),
+        )
+        assert len(data) == len(space), (
+            "lenght of data and space must be equal",
+            len(data),
+            len(space),
+        )
+        for _src, _space in zip(data, space, strict=True):
+            _vec = flatten(_space, _src)
+            tensor_list.append(_vec)
+        vec = np.concatenate(tensor_list, axis=-1)
+    elif isinstance(space, spaces.Dict):  # DictSpace 的字典是 OrderedDict
+        assert isinstance(data, (dict, OrderedDict)), (
+            "data must be dict or OrderedDict",
+            type(data),
+        )
+        tensor_list: list[np.ndarray] = []
+        for key, _space in space.items():
+            _src = data[key]
+            _vec = flatten(_space, _src)
+            tensor_list.append(_vec)
+        vec = np.concatenate(tensor_list, axis=-1)
     else:
         raise NotImplementedError(
             "type(value) is {}, type(space) is {}".format(type(data), type(space))
         )
-
-    return value_flattened
+    return vec
 
 
 def unflatten(space: spaces.Space, data: _T_NDArr):
@@ -114,43 +153,39 @@ def unflatten(space: spaces.Space, data: _T_NDArr):
         raise NotImplementedError("type(space) {} is unsupported".format(type(space)))
 
 
-def discretize_space(space: spaces.Box, nvec: Sequence[int]):
+def discretize_space(space: spaces.Box, nvec: Sequence[int] | np.ndarray):
     """
     离散化空间
     """
 
     if isinstance(space, spaces.Box):
-        assert all(n > 0 for n in nvec), "nvec must be positive"
-        return spaces.MultiDiscrete(np.array(nvec) - 1)
+        nvec = np.asarray(nvec)
+        assert (nvec > 0).all(), ("nvec must be all positive", nvec)
+        vld = np.isfinite(space.low)
+        assert vld.all(), ("space.low must be all finite, but", np.where(~vld))
+        vld = np.isfinite(space.high)
+        assert vld.all(), ("space.high must be all finite, but", np.where(~vld))
+        return spaces.MultiDiscrete(nvec)
     else:
         raise TypeError("space must be Box, got", type(space))
 
 
-def normalize(data: _T, low: _T, high: _T) -> _T:
+def discretize_value(
+    cont_space: spaces.Box,
+    disc_space: spaces.Space,
+    value: np.ndarray,
+):
     """
-    线性归一化 [low, high]->[0, 1]
-    Args:
-        data (np.ndarray | torch.Tensor): _description_
-        low (np.ndarray | torch.Tensor): 端点1
-        high (np.ndarray | torch.Tensor): 端点2
-    Returns:
-        (np.ndarray | torch.Tensor): 归一化数据
+    离散化值
     """
-    data = (data - low) / (high - low)  # type: ignore
-    return data
-
-
-def affcmb(weight: _T, low: _T, high: _T) -> _T:
-    """
-    仿射组合(线性归一化的逆映射)
-    $$
-    low + w * (high - low)
-    $$
-    Args:
-        weight (np.ndarray | torch.Tensor): 权重
-        low (np.ndarray | torch.Tensor): 端点1
-        high (np.ndarray | torch.Tensor): 端点2
-    Returns:
-        (np.ndarray | torch.Tensor): 仿射组合数据
-    """
-    return low + weight * (high - low)  # type: ignore
+    t = affcmb_inv(cont_space.low, cont_space.high, value)  # -> [0,1]
+    if isinstance(disc_space, spaces.MultiDiscrete):
+        dmax = disc_space.nvec - 1
+    elif isinstance(disc_space, spaces.MultiBinary):
+        dmax = 1
+    elif isinstance(disc_space, spaces.Discrete):
+        dmax = disc_space.n - 1
+    else:
+        raise TypeError("unsupported disc_space type", type(disc_space))
+    value_d = np.round(t * dmax).astype(np.intp)
+    return value_d

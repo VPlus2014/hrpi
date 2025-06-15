@@ -3,7 +3,7 @@ import math
 from typing import TYPE_CHECKING, cast
 
 if TYPE_CHECKING:
-    from ..base_model import SupportedMaskType
+    from ..proto4model import SupportedMaskType
 from collections.abc import Sequence
 from .base_aircraft import BaseModel, BaseAircraft
 
@@ -19,8 +19,8 @@ from ...utils.math_np import (
     ode_euler,
     delta_rad_reg,
     affcmb,
-    DoubleNDArr,
-    FloatNDArr,
+    Float64NDArr,
+    Float32NDArr,
     ndarray,
     where,
     asarray,
@@ -119,35 +119,35 @@ class P6DOFPlane(BaseAircraft):
         )
 
         # 当前控制量
-        self._n_w = zeros(
+        self._ctrl_n_w = zeros(
             (bsz, 3),
             # device=device,
             dtype=dtype,
         )
-        self._dmu = zeros(
+        self._ctrl_dmu = zeros(
             (bsz, 1),
             # device=device,
             dtype=dtype,
         )
 
-    def set_ic_tas(self, tas: ndarray | float, dst_index: SupportedMaskType | None):
+    def set_ic_tas(self, tas: ndarray | float, dst_mask: SupportedMaskType | None):
         """设置初始真空速"""
-        dst_index = self.proc_to_mask(dst_index)
-        self._ic_tas[dst_index, :] = tas
+        dst_mask = self.proc_to_mask(dst_mask)
+        self._ic_tas[dst_mask, :] = tas
 
     def set_ic_rpy_ew(
-        self, rpy_ew: ndarray | float, dst_index: SupportedMaskType | None
+        self, rpy_ew: ndarray | float, dst_mask: SupportedMaskType | None
     ):
         """设置初始速度系姿态欧拉角"""
-        dst_index = self.proc_to_mask(dst_index)
-        self._ic_rpy_ew[dst_index, :] = rpy_ew
+        dst_mask = self.proc_to_mask(dst_mask)
+        self._ic_rpy_ew[dst_mask, :] = rpy_ew
 
     def set_ic_pos_e(
-        self, position_e: ndarray | float, dst_index: SupportedMaskType | None
+        self, position_e: ndarray | float, dst_mask: SupportedMaskType | None
     ):
         """设置初始位置地轴系坐标"""
-        dst_index = self.proc_to_mask(dst_index)
-        self._ic_pos_e[dst_index, :] = position_e
+        dst_mask = self.proc_to_mask(dst_mask)
+        self._ic_pos_e[dst_mask, :] = position_e
 
     def reset(
         self,
@@ -159,12 +159,15 @@ class P6DOFPlane(BaseAircraft):
         self._rpy_ew[mask, :] = self._ic_rpy_ew[mask, :]
         self._tas[mask, :] = self._ic_tas[mask, :]
         self._pos_e[mask, :] = self._ic_pos_e[mask, :]
+        # 控制量清空
+        self._ctrl_n_w[mask, :] = 0
+        self._ctrl_dmu[mask, :] = 0
 
         self._ppgt_rpy_ew2Qew(mask)
         self._propagate(mask)
 
     def set_action(
-        self, action: DoubleNDArr | FloatNDArr, mask: SupportedMaskType | None = None
+        self, action: Float64NDArr | Float32NDArr, mask: SupportedMaskType | None = None
     ):
         """
         Args:
@@ -175,7 +178,7 @@ class P6DOFPlane(BaseAircraft):
             - dmu_cmd: 期望滚转角速度指令, unit: rad/s.
         """
         mask = self.proc_to_mask(mask)
-        logr = self.logr
+        logr = self.logger
         device = self.device
         dtype = self.dtype
         if not isinstance(action, ndarray):
@@ -187,10 +190,10 @@ class P6DOFPlane(BaseAircraft):
 
         nx_d, ny_d, nz_d, dmu_d = unbind_keepdim(action, -1)  # (...,1)
 
-        self._n_w[mask, 0:1] = nx_d
-        self._n_w[mask, 1:2] = ny_d
-        self._n_w[mask, 2:3] = nz_d
-        self._dmu[mask, :] = dmu_d
+        self._ctrl_n_w[mask, 0:1] = nx_d
+        self._ctrl_n_w[mask, 1:2] = ny_d
+        self._ctrl_n_w[mask, 2:3] = nz_d
+        self._ctrl_dmu[mask, :] = dmu_d
         if self.DEBUG:
             logr.debug(
                 (
@@ -219,7 +222,7 @@ class P6DOFPlane(BaseAircraft):
             - nz_d: 期望法向过载指令(NED +Z), unit:G.\
             - dot_mu: 期望滚转角速度指令, unit: rad/s.
         """
-        logr = self.logr
+        logr = self.logger
         assert action.shape[-1] == 4, (
             "action must have shape (...,4), but got {}.".format(action.shape),
         )
@@ -261,7 +264,7 @@ class P6DOFPlane(BaseAircraft):
 
     def run(self, mask: SupportedMaskType | None):
         mask = self.proc_to_mask(mask)
-        logr = self.logr
+        logr = self.logger
         t = self.sim_time_s()
         pos_e_next, tas_next, Qew_next, mu_next = self._run_ode(
             dt_s=self.sim_step_size_s,
@@ -338,8 +341,8 @@ class P6DOFPlane(BaseAircraft):
         p_e, V, Qew, mu = split_(X, [3, 1, 4, 1], axis=-1)
 
         _0 = self._0F
-        n_w = self._n_w  # @ode
-        dmu = self._dmu  # @ode
+        n_w = self._ctrl_n_w  # @ode
+        dmu = self._ctrl_dmu  # @ode
         g = self._g
 
         a_w = g * n_w  # 过载加速度风轴分量
@@ -354,7 +357,8 @@ class P6DOFPlane(BaseAircraft):
         _P = dmu
         _Q = -a_wz * Vinv
         _R = a_wy * Vinv
-        dot_Qew = quat_mul(Qew, 0.5 * cat([_0, _P, _Q, _R], axis=-1))
+        w = cat([_0, _P, _Q, _R], axis=-1)
+        dot_Qew = quat_mul(Qew, 0.5 * w)
         dot_p_e = quat_rotate(Qew, cat([V, _0, _0], axis=-1))  # 惯性速度
 
         dotX = [dot_p_e, dot_V, dot_Qew, dmu]

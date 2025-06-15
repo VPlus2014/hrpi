@@ -1,5 +1,6 @@
 from __future__ import annotations
 from typing import TYPE_CHECKING
+
 # import torch
 import numpy as np
 from collections.abc import Sequence
@@ -42,14 +43,14 @@ class PointMassMissile(BaseMissile):
     #     self._K_2 = 1
 
     # @property
-    # def m(self) -> torch.Tensor:
+    # def m(self) -> np.ndarray:
     #     return (
     #         self._m0
-    #         - torch.clamp(self.sim_time_s(), max=self._t_thrust_s).unsqueeze(-1)
+    #         - np.clamp(self.sim_time_s(), max=self._t_thrust_s).unsqueeze(-1)
     #         * self._dm
     #     )
 
-    # def reset(self, env_indices: Sequence[int] | torch.Tensor | None = None):
+    # def reset(self, env_indices: Sequence[int] | np.ndarray | None = None):
     #     env_indices = self.proc_index(env_indices)
     #     super().reset(env_indices)
 
@@ -57,13 +58,13 @@ class PointMassMissile(BaseMissile):
     #     self._ppgt_tas2Vw()
 
     #     # reset simulation variaode_solverbles
-    #     chi = torch.zeros(
+    #     chi = np.zeros(
     #         (env_indices.shape[0], 1), device=self.device
     #     )  # 航迹方位角(Course)
-    #     gamma = torch.zeros((env_indices.shape[0], 1), device=self.device)  # 航迹倾斜角
+    #     gamma = np.zeros((env_indices.shape[0], 1), device=self.device)  # 航迹倾斜角
     #     self.Q_ew(env_indices) = quat_mul(Qz(chi), Qy(gamma))
 
-    # def run(self, action: torch.Tensor):
+    # def run(self, action: np.ndarray):
     #     (
     #         self.position_e,
     #         self.tas,
@@ -92,40 +93,40 @@ class PointMassMissile(BaseMissile):
 
     # def _run_ode(
     #     self,
-    #     position_e: torch.Tensor,
-    #     velocity_e: torch.Tensor,
-    #     tas: torch.Tensor,
-    #     q_kg: torch.Tensor,
-    #     t_s: torch.Tensor | float,
-    #     action: torch.Tensor,
+    #     position_e: np.ndarray,
+    #     velocity_e: np.ndarray,
+    #     tas: np.ndarray,
+    #     q_kg: np.ndarray,
+    #     t_s: np.ndarray | float,
+    #     action: np.ndarray,
     # ):
-    #     n_y, n_z = torch.split(action, [1, 1], axis=-1)  # (...,1)
+    #     n_y, n_z = np.split(action, [1, 1], axis=-1)  # (...,1)
     #     D_w = self.D_w(tas, n_y, n_z)
-    #     _0 = torch.zeros_like(D_w)
-    #     A_w = torch.cat([-D_w, _0, _0], axis=-1)
+    #     _0 = np.zeros_like(D_w)
+    #     A_w = np.cat([-D_w, _0, _0], axis=-1)
     #     A_k = A_w
 
-    #     T_b = torch.cat(
-    #         [self.T_b, torch.zeros_like(self.T_b), torch.zeros_like(self.T_b)], dim=-1
+    #     T_b = np.cat(
+    #         [self.T_b, np.zeros_like(self.T_b), np.zeros_like(self.T_b)], dim=-1
     #     )
     #     T_k = T_b
 
-    #     n = torch.cat([torch.zeros_like(n_y), n_y, n_z], axis=-1)
+    #     n = np.cat([np.zeros_like(n_y), n_y, n_z], axis=-1)
     #     acc_k = self._g * n + (A_k + T_k) / self.m + quat_rotate(q_kg, self.G_e)
 
     #     dot_tas = acc_k[..., :1]
 
     #     omega_k = (
     #         acc_k
-    #         - torch.cat(
-    #             [dot_tas, torch.zeros_like(dot_tas), torch.zeros_like(dot_tas)], dim=-1
+    #         - np.cat(
+    #             [dot_tas, np.zeros_like(dot_tas), np.zeros_like(dot_tas)], dim=-1
     #         )
-    #     ) / (tas.clip(min=1e-3) * torch.tensor([[1, 1, -1]], device=self.device))
+    #     ) / (tas.clip(min=1e-3) * np.tensor([[1, 1, -1]], device=self.device))
     #     omega_k = omega_k[:, [0, 2, 1]]
     #     dot_q_kg = 0.5 * quat_mul(
     #         q_kg,
-    #         torch.cat(
-    #             [torch.zeros(size=(omega_k.shape[0], 1), device=self.device), omega_k],
+    #         np.cat(
+    #             [np.zeros(size=(omega_k.shape[0], 1), device=self.device), omega_k],
     #             dim=-1,
     #         ),
     #     )
@@ -138,24 +139,24 @@ class PointMassMissile(BaseMissile):
     #     return position_e_prime, tas_prime, q_ke_prime
 
     # @property
-    # def G_e(self) -> torch.Tensor:
+    # def G_e(self) -> np.ndarray:
     #     return self._g_e
 
-    # def _calc_mass(self, t_s: torch.Tensor):
+    # def _calc_mass(self, t_s: np.ndarray):
     #     """计算质量, shape=(batch_size, 1)"""
-    #     m = self._m0 - self._dm * torch.clamp(t_s, 0, self._t_thrust_s)
+    #     m = self._m0 - self._dm * np.clamp(t_s, 0, self._t_thrust_s)
     #     return m
 
     # @property
-    # def T_b(self) -> torch.Tensor:
+    # def T_b(self) -> np.ndarray:
     #     mask = self.sim_time_s < self._t_thrust_s
-    #     T_b = torch.tensor([self._T], device=self.device).repeat(self.group_size)
+    #     T_b = np.tensor([self._T], device=self.device).repeat(self.group_size)
     #     return (mask * T_b).unsqueeze(-1)
 
     # def D_w(
-    #     self, tas: torch.Tensor, n_y: torch.Tensor, n_z: torch.Tensor
-    # ) -> torch.Tensor:
-    #     D_1 = self._k_1 * torch.pow(tas, 2)
-    #     D_2 = self._K_2 * (torch.pow(n_y, 2) + torch.pow(n_z, 2)) / torch.pow(tas, 2)
+    #     self, tas: np.ndarray, n_y: np.ndarray, n_z: np.ndarray
+    # ) -> np.ndarray:
+    #     D_1 = self._k_1 * np.pow(tas, 2)
+    #     D_2 = self._K_2 * (np.pow(n_y, 2) + np.pow(n_z, 2)) / np.pow(tas, 2)
 
     #     return D_1 + D_2

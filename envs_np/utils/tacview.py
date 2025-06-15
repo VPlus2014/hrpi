@@ -167,20 +167,68 @@ def format_id(id: int | str) -> str:
     return id_hex
 
 
-def format_destroy(id: str):
-    """坠毁事件"""
-    msg = f"0,Event=Destroyed|{id}|"
-    return msg
-
-
 def format_remove(id: str):
     """删除对象"""
     msg = f"-{id}"
     return msg
 
 
-def format_bookmark(msg: str):
-    return f"0,Event=Bookmark|{msg}"
+def format_event(event_type: str, *items):
+    """
+    自定义事件, 基本格式:
+    0,Event = EventType | FirstObjectId | SecondObjectId | ... | EventText
+
+    支持的 EventType:
+    - Bookmark: 高亮信息
+    - Message: 普通信息
+    - Debug: 调试信息
+    - Destroyed: 坠毁事件
+    - LeftArea: 离开区域事件
+    - TakenOff: 起飞事件
+    - Landed: 着陆事件
+    - Timeout: 超时事件
+    """
+    return f"0,Event={event_type}|" + "|".join((str(m) for m in items))
+
+
+def format_bookmark(*items):
+    """高亮信息"""
+    return format_event("Bookmark", *items)
+
+
+def format_message(*items):
+    """普通信息"""
+    return format_event("Message", *items)
+
+
+def format_Debug(*items):
+    """调试信息"""
+    return format_event("Debug", *items)
+
+
+def format_destroyed(id: str, *etc):
+    """坠毁事件"""
+    return format_event("Destroyed", id, *etc)
+
+
+def format_left_area(id: str, *etc):
+    """离开区域事件"""
+    return format_event("LeftArea", id, *etc)
+
+
+def format_taken_off(id: str, *etc):
+    """起飞事件"""
+    return format_event("TakenOff", id, *etc)
+
+
+def format_landed(id: str, *etc):
+    """着陆事件"""
+    return format_event("Landed", id, *etc)
+
+
+def format_timeout(*items):
+    """超时事件"""
+    return format_event("Timeout", *items)
 
 
 def format_unit(
@@ -261,7 +309,7 @@ class TacviewRecorder:
     def __init__(self):
         cls = self.__class__
         cls._obj_count += 1
-        self._id = f"{os.getpid()}_{self._obj_count}"
+        self._id = f"{os.getpid()}_{cls._obj_count}"
         self._logr = logr = logging.getLogger(f"{cls.__name__}.{self._id}")
         logr.setLevel(logging.DEBUG)
 
@@ -273,10 +321,17 @@ class TacviewRecorder:
 
         self.format_id = format_id
         self.format_unit = format_unit
-        self.format_time = format_timestamp
-        self.format_destroy = format_destroy
-        self.format_bookmark = format_bookmark
+        self.format_timestamp = format_timestamp
         self.format_remove = format_remove
+        self.format_event = format_event
+        self.format_debug = format_Debug
+        self.format_message = format_message
+        self.format_bookmark = format_bookmark
+        self.format_destroyed = format_destroyed
+        self.format_left_area = format_left_area
+        self.format_taken_off = format_taken_off
+        self.format_landed = format_landed
+        self.format_timeout = format_timeout
 
     def reset_local(
         self,
@@ -541,7 +596,7 @@ class TacviewRecorder:
                             for xyz in p_e
                         ]
                     )
-                    render.add(render.format_time(t))
+                    render.add(render.format_timestamp(t))
                     nagt_ = np.random.randint(1, nagents + 1)
                     idxs = np.random.choice(nagents, nagt_, replace=False)
                     rpy_deg = np.rad2deg(rpy)

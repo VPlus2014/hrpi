@@ -15,13 +15,12 @@ from ..utils.math_np import (
     rpy2quat,
     uvw2alpha_beta,
     norm_,
-    IntNDArr,
     BoolNDArr,
-    FloatNDArr,
-    DoubleNDArr,
+    Float_NDArr,
     bkbn,
 )
 from numpy.typing import NDArray
+from ..utils.tacview import ACMI_Types
 
 LOGR = logging.getLogger(__name__)
 
@@ -36,14 +35,14 @@ class BaseModel(ABC):
     STATUS_DYING = 1  # 即将结束
     STATUS_DEAD = 2  # 结束
 
-    logr = LOGR
+    logger = LOGR
     DEBUG: bool = False
 
     def __init__(
         self,
         group_shape: Sequence[int] | int = 1,
         device="cpu",
-        dtype: type[np.float64] = np.float64,  # 科学计算默认
+        dtype: type[np.floating] = np.float64,
         sim_step_size_ms: int = 1,
         use_gravity: bool = True,
         g: np.ndarray | float = 9.8,  # 默认重力加速度 m/s^2
@@ -64,6 +63,7 @@ class BaseModel(ABC):
         call_sign: str | Sequence[str] = "",
         acmi_parent: np.ndarray | int = 0,
         debug=False,
+        logger=logger,
     ) -> None:
         """
         质点模型组 BaseModel
@@ -73,7 +73,7 @@ class BaseModel(ABC):
             sim_step_size_ms (int, optional): 仿真步长, 单位:ms. Defaults to 1.
             group_shape (int|Sequence[int], optional): 组容量N/形状(...,N), Defaults to 1.
             device (np.device, optional): 所在torch设备. Defaults to np.device("cpu").
-            dtype (np.dtype, optional): torch浮点类型. Defaults to np.float32.
+            dtype (np.dtype, optional): torch浮点类型. Defaults to np.float64.
             use_gravity (bool, optional): 是否启用重力(无则不支持计算重力). Defaults to True.
             g (float, optional): 重力加速度, 单位:m/s^2. Defaults to 9.8.
             use_eb (bool, optional): 是否启用地轴-体轴系状态. Defaults to True.
@@ -95,12 +95,14 @@ class BaseModel(ABC):
         self.__class__._objcnt += 1
         self._tmp_gid = (os.getpid() << 16) | self.__class__._objcnt
         self.DEBUG = debug
+        self.logger = logger
         self._device = _device = device  # = np.device(device)
-        self._dtype = dtype
-        assert dtype in (
-            np.float32,
-            np.float64,
-        ), "dtype only support float32/float64"
+        assert dtype in (np.float32, np.float64), (
+            "dtype must be float32 or float64",
+            dtype,
+        )
+        # _dtype = np.float64 if use_float64 else np.float32
+        self._dtype = _dtype = dtype
         if isinstance(group_shape, int):
             group_shape = (group_shape,)
         assert len(group_shape) > 0, ("group_shape must be not empty", group_shape)
@@ -108,7 +110,7 @@ class BaseModel(ABC):
         self._batch_size = int(np.prod(_group_shape))
         _0f1 = np.zeros(
             _group_shape + (1,),
-            dtype=dtype,
+            dtype=_dtype,
             # device=_device,
         )  # (...,1)
 
@@ -129,19 +131,19 @@ class BaseModel(ABC):
         self.health_point = np.zeros(
             _group_shape + (1,),
             # device=_device,
-            dtype=dtype,
+            dtype=_dtype,
         )
         """health point, shape: (...,N,1)"""
 
         self._vis_radius = np.empty(
             _group_shape + (1,),
             # device=_device,
-            dtype=dtype,
+            dtype=_dtype,
         )
         """可视半径, shape: (...,N,1)"""
         self._vis_radius[...] = np.asarray(
             vis_radius,
-            dtype=dtype,
+            dtype=_dtype,
             # device=_device,
         )
 
@@ -151,13 +153,13 @@ class BaseModel(ABC):
         self._pos_e = np.empty(
             _group_shape + (3,),
             # device=_device,
-            dtype=dtype,
+            dtype=_dtype,
         )
         """position in NED local frame, unit: m, shape: (...,N,3)"""
         self._vel_e = np.empty(
             _group_shape + (3,),
             # device=_device,
-            dtype=dtype,
+            dtype=_dtype,
         )
         """velocity in NED local frame, unit: m/s, shape: (...,N,3)"""
 
@@ -179,11 +181,11 @@ class BaseModel(ABC):
         self._g = np.empty(
             _group_shape + (1,),
             # device=_device,
-            dtype=dtype,
+            dtype=_dtype,
         )
         self._g[...] = np.asarray(
             g,
-            dtype=dtype,
+            dtype=_dtype,
             # device=_device,
         )
         self.use_gravity = use_gravity
@@ -198,7 +200,7 @@ class BaseModel(ABC):
         self._tas = np.zeros(
             _group_shape + (1,),
             # device=_device,
-            dtype=dtype,
+            dtype=_dtype,
         )
         """true air speed 真空速, unit: m/s, shape: (...,N,1)"""
 
@@ -207,25 +209,25 @@ class BaseModel(ABC):
             self._vel_b = np.zeros(
                 _group_shape + (3,),
                 # device=_device,
-                dtype=dtype,
+                dtype=_dtype,
             )
             """惯性速度体轴坐标 (U,V,W) shape: (...,N,3)"""
             self._Q_eb = np.zeros(
                 _group_shape + (4,),
                 # device=_device,
-                dtype=dtype,
+                dtype=_dtype,
             )
             """地轴/体轴 四元数 shape: (...,N,4)"""
             self._rpy_eb = np.zeros(
                 _group_shape + (3,),
                 # device=_device,
-                dtype=dtype,
+                dtype=_dtype,
             )
             """地轴/体轴 欧拉角 (roll, pitch, yaw) shape:(...,N,3)"""
             self._omega_b = np.zeros(
                 _group_shape + (3,),
                 # device=_device,
-                dtype=dtype,
+                dtype=_dtype,
             )
             """体轴系下的旋转角速度 (P,Q,R) shape: (...,N,3)"""
         if use_inertia:
@@ -233,13 +235,13 @@ class BaseModel(ABC):
             self._I_b = np.empty(
                 _group_shape + (3, 3),
                 # device=_device,
-                dtype=dtype,
+                dtype=_dtype,
             )
             """体轴惯性矩 shape: (...,N,3,3)"""
             self._I_b_inv = np.empty(
                 _group_shape + (3, 3),
                 # device=_device,
-                dtype=dtype,
+                dtype=_dtype,
             )
 
         self._use_ew = use_ew
@@ -247,19 +249,19 @@ class BaseModel(ABC):
             self._rpy_ew = np.zeros(
                 _group_shape + (3,),
                 # device=_device,
-                dtype=dtype,
+                dtype=_dtype,
             )
             """地轴/风轴 欧拉角 (mu, gamma, chi) shape:(...,N,3)"""
             self._Q_ew = np.zeros(
                 _group_shape + (4,),
                 # device=_device,
-                dtype=dtype,
+                dtype=_dtype,
             )
             """地轴/风轴 四元数 shape: (...,N,4)"""
             self._vel_w = np.zeros(
                 _group_shape + (3,),
                 # device=_device,
-                dtype=dtype,
+                dtype=_dtype,
             )
             """惯性速度风轴分量 (TAS,0,0) shape: (...,N,3)"""
 
@@ -268,13 +270,13 @@ class BaseModel(ABC):
             self._rpy_wb = np.zeros(
                 _group_shape + (3,),
                 # device=_device,
-                dtype=dtype,
+                dtype=_dtype,
             )
             """风轴/体轴 欧拉角 (0, alpha, -beta) shape:(...,N,3)"""
             self._Q_wb = np.zeros(
                 _group_shape + (4,),
                 # device=_device,
-                dtype=dtype,
+                dtype=_dtype,
             )
             """风轴/体轴 四元数 shape: (...,N,4)"""
 
@@ -283,7 +285,7 @@ class BaseModel(ABC):
             self._blh0 = np.empty(
                 _group_shape + (3,),
                 # device=_device,
-                dtype=dtype,
+                dtype=_dtype,
             )
             """坐标原点(纬度,经度,高度), 单位:(deg,m), shape: (...,N,3)"""
             self._blh0[..., 0:1] = lat0 + _0f1
@@ -293,7 +295,7 @@ class BaseModel(ABC):
             self._blh = np.empty(
                 _group_shape + (3,),
                 # device=_device,
-                dtype=dtype,
+                dtype=_dtype,
             )
             """当前 (纬度,经度,高度), 单位:(deg,m), shape: (...,N,3)"""
 
@@ -308,7 +310,7 @@ class BaseModel(ABC):
             self._mass = np.empty(
                 _group_shape + (1,),
                 # device=_device,
-                dtype=dtype,
+                dtype=_dtype,
             )
 
         # if len(kwargs):
@@ -390,7 +392,7 @@ class BaseModel(ABC):
 
     @property
     def dtype(self):
-        """torch dtype"""
+        """float dtype"""
         return self._dtype
 
     def proc_index(self, index: SupportedIndexType | None):
@@ -417,6 +419,14 @@ class BaseModel(ABC):
     def proc_to_mask(self, mask: SupportedMaskType | None):
         """
         调整到与 group_shape 同尺寸的 mask
+        Args:
+            mask: 输入 mask, 支持以下几种形式:
+            - None: 全 True mask
+            - Ellipsis: 全 True mask
+            - slice: 全 True mask
+            - NDArray[np.bool_]: 与 len(group_shape) 相同阶数 bool 数组
+        Returns:
+            mask: 调整后的 mask, shape: (...,N,)
         """
         tgt = self._MASK1  # ref
         if mask is None or mask is Ellipsis or mask is tgt:
@@ -431,16 +441,11 @@ class BaseModel(ABC):
                 elif mask.ndim == tgt.ndim + 1:
                     msk = mask.squeeze(-1)
                 else:
-                    raise ValueError("mask shape mismatch", mask.shape, tgt.shape)
+                    raise ValueError("mask ndim mismatch", mask.ndim, tgt.ndim)
 
                 msk = np.logical_and(
                     tgt, msk
                 )  # mask&self._MASK1 做的是字节位运算,输入为int数组时会发生意料之外的结果!
-                assert msk.shape == tgt.shape, (
-                    "mask shape mismatch",
-                    msk.shape,
-                    tgt.shape,
-                )
             # msk = mask.to(self.device)
         elif isinstance(mask, slice):
             if mask == _SliceAll:
@@ -449,6 +454,11 @@ class BaseModel(ABC):
                 raise NotImplementedError("slice mask not supported yet")
         else:
             raise TypeError("unsupported mask type", type(mask))
+        assert msk.shape == tgt.shape, (
+            "mask shape mismatch",
+            msk.shape,
+            tgt.shape,
+        )
         return msk
 
     @property
@@ -461,35 +471,35 @@ class BaseModel(ABC):
         """仿真步长, 单位:s"""
         return self._sim_step_size_ms * 1e-3
 
-    def vis_radius(self) -> DoubleNDArr:
+    def vis_radius(self) -> Float_NDArr:
         """遮蔽半径, 单位:m, shape: (...,N,1)"""
         return self._vis_radius
 
-    def position_e(self) -> DoubleNDArr:
+    def position_e(self) -> Float_NDArr:
         """position in NED local frame, unit: m, shape: (...,N,3)"""
         return self._pos_e
 
-    def blh(self) -> DoubleNDArr:
+    def blh(self) -> Float_NDArr:
         """当前(纬度,经度,高度), 单位:(deg,m), shape: (...,N,3)"""
         return self._blh
 
-    def blh0(self) -> DoubleNDArr:
+    def blh0(self) -> Float_NDArr:
         """坐标原点(纬度,经度,高度), 单位:(deg,m), shape: (...,N,3)"""
         return self._blh0[..., :]
 
-    def longitude_deg(self) -> DoubleNDArr:
+    def longitude_deg(self) -> Float_NDArr:
         """longitude, unit: rad, shape: (...,N,1)"""
         return self._blh[..., 1:2]
 
-    def latitude_deg(self) -> DoubleNDArr:
+    def latitude_deg(self) -> Float_NDArr:
         """latitude, unit: rad, shape: (...,N,1)"""
         return self._blh[..., 0:1]
 
-    def altitude_m(self) -> DoubleNDArr:
+    def altitude_m(self) -> Float_NDArr:
         """海拔 altitude, unit: m, shape: (...,N,1)"""
         return self._blh[..., 2:3]
 
-    def g_e(self) -> DoubleNDArr:
+    def g_e(self) -> Float_NDArr:
         """NED地轴系重力加速度向量, unit: m/s^2, shape: (...,N,3)"""
         return self._g_e
 
@@ -499,7 +509,7 @@ class BaseModel(ABC):
 
     def sim_time_s(
         self,
-    ) -> DoubleNDArr:
+    ) -> Float_NDArr:
         """model simulation time, unit: s, shape: (...,N,1)"""
         return self.sim_time_ms() * 1e-3
 
@@ -551,52 +561,52 @@ class BaseModel(ABC):
         """判断sims是否死亡, shape=(...,N,1)"""
         return self._status_is(self.STATUS_DEAD)
 
-    def Q_eb(self) -> DoubleNDArr:
+    def Q_eb(self) -> Float_NDArr:
         """地轴系/体轴系四元数"""
         return self._Q_eb
 
-    def Q_wb(self) -> DoubleNDArr:
+    def Q_wb(self) -> Float_NDArr:
         """风轴系/体轴系四元数"""
         return self._Q_wb
 
-    def Q_ew(self) -> DoubleNDArr:
+    def Q_ew(self) -> Float_NDArr:
         """地轴系/风轴系四元数"""
         return self._Q_ew
 
-    def tas(self) -> DoubleNDArr:
+    def tas(self) -> Float_NDArr:
         """true air speed, unit: m/s, shape: (...,N,1)"""
         return self._tas
 
-    def velocity_b(self) -> DoubleNDArr:
+    def velocity_b(self) -> Float_NDArr:
         """惯性速度 NED体轴系坐标 (U,V,W), unit: m/s, shape: (...,N,3)"""
         return self._vel_b
 
-    def velocity_e(self) -> DoubleNDArr:
+    def velocity_e(self) -> Float_NDArr:
         """惯性速度 NED地轴系坐标 (V_N, V_E, V_D), unit: m/s, shape: (...,N,3)"""
         return self._vel_e
 
-    def velocity_w(self) -> DoubleNDArr:
+    def velocity_w(self) -> Float_NDArr:
         """惯性速度 NED风轴系坐标 (TAS,0,0), unit: m/s, shape: (...,N,3)"""
 
         return self._vel_w
 
-    def rpy_eb(self) -> DoubleNDArr:
+    def rpy_eb(self) -> Float_NDArr:
         """体轴系 (roll, pitch, yaw) unit: rad, shape: (...,N,3)"""
         return self._rpy_eb
 
-    def rpy_ew(self) -> DoubleNDArr:
+    def rpy_ew(self) -> Float_NDArr:
         """风轴系 (mu, gamma, chi) unit: rad, shape: (...,N,3)"""
         return self._rpy_ew
 
-    def mass(self) -> DoubleNDArr:
+    def mass(self) -> Float_NDArr:
         """质量, unit: kg, shape: (...,N,1)"""
         return self._mass
 
-    def inertia(self) -> DoubleNDArr:
+    def inertia(self) -> Float_NDArr:
         """体轴惯性矩阵, unit: kg*m^2, shape: (...,N,3,3)"""
         return self._I_b
 
-    def inertia_inv(self) -> DoubleNDArr:
+    def inertia_inv(self) -> Float_NDArr:
         """体轴惯性矩阵的逆矩阵, unit: kg^{-1}*m^{-2}, shape: (...,N,3,3)"""
         return self._I_b_inv
 

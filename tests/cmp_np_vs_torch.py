@@ -31,8 +31,7 @@ def test(
     use_np=True,
     unit_num=1,
     device="cpu",
-    tsr_float=torch.float64,
-    np_float=np.float64,
+    use_float64=True,
     max_episodes=100,
     max_steps=100,
     seed=0,
@@ -44,13 +43,13 @@ def test(
         grp = P6DOFPlane_np(
             group_shape=(unit_num,),
             device=device,
-            dtype=np_float,
+            use_float64=use_float64,
         )
     else:
         grp = P6DOFPlane_th(
             group_shape=(unit_num,),
             device=device,
-            dtype=tsr_float,
+            dtype=torch.float64 if use_float64 else torch.float32,
         )
     qbar = range(max_episodes * max_steps)
     if use_tqdm:
@@ -84,8 +83,7 @@ def main():
     config: dict[str, Any] = dict(
         unit_num=unit_num,
         # device="cuda",
-        tsr_float=torch.float64,
-        np_float=np.float64,
+        use_float64=True,
         use_tqdm=True,
         max_episodes=max_episodes,
         max_steps=max_steps,

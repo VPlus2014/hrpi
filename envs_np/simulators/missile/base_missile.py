@@ -7,8 +7,7 @@ from abc import abstractmethod
 if TYPE_CHECKING:
     from ..aircraft import BaseAircraft
 
-from ..base_model import BaseModel, BaseModel, SupportedMaskType
-from ...utils.tacview import ACMI_Types
+from ..proto4model import BaseModel, BaseModel, SupportedMaskType, ACMI_Types
 from ...utils.math_np import bkbn, ndarray, BoolNDArr
 
 
@@ -161,7 +160,7 @@ class BaseMissile(BaseModel):
             self.miss_distance[dst_index, :], new_distance
         )
         if self.DEBUG:
-            self.logr.debug(
+            self.logger.debug(
                 (
                     "distance:{:.3g}".format(self.distance.ravel()[[0]].item()),
                     "MD:{:.3g}".format(self.miss_distance.ravel()[[0]].item()),

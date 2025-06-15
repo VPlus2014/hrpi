@@ -1,6 +1,6 @@
 # import torch
 from typing import TYPE_CHECKING, Sequence
-from ..base_reward_fn import BaseRewardFn
+from ..proto4rf import BaseRewardFn
 from environments_th.utils.math_pt import euler_from_quat, ned2aer
 
 if TYPE_CHECKING:
@@ -15,5 +15,5 @@ class AircraftSurvivalRewardFn(BaseRewardFn):
     def reset(self, env, env_indices, **kwargs):
         pass
 
-    def forward(self, env: "EvasionEnv", plane, **kwargs) -> torch.Tensor:
+    def forward(self, env: "EvasionEnv", plane, **kwargs) -> np.ndarray:
         return env.missile.is_missed()

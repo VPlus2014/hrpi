@@ -39,6 +39,7 @@ deg2rad = bkbn.deg2rad
 rad2deg = bkbn.rad2deg
 isclose = bkbn.isclose
 chunk = bkbn.array_split
+gather = bkbn.take_along_axis
 
 unsqueeze = bkbn.expand_dims
 squeeze = bkbn.squeeze
@@ -59,12 +60,16 @@ PI = math.pi
 TAU = math.tau  # 2*pi
 
 ndarray = bkbn.ndarray
-FloatNDArr = NDArray[bkbn.float32]
-DoubleNDArr = NDArray[bkbn.float64]
+Float_NDArr = NDArray[bkbn.floating]
+Int_NDArr = NDArray[bkbn.integer]
+Int32NDArr = NDArray[bkbn.int32]
+Int64NDArr = NDArray[bkbn.int64]
+Float32NDArr = NDArray[bkbn.float32]
+Float64NDArr = NDArray[bkbn.float64]
 BoolNDArr = NDArray[bkbn.bool_]
-IntNDArr = NDArray[bkbn.int32]
 LongNDArr = NDArray[bkbn.int_]
-LongLongNDArr = NDArray[bkbn.int64]
+LongLongNDArr = Int64NDArr
+ShortNDArr = NDArray[bkbn.int16]
 CharNDArr = NDArray[bkbn.str_]
 #
 _SupportedScalar = Union[int, float, bool, bkbn.number, bkbn.bool_]
@@ -83,14 +88,14 @@ def unbind_keepdim(x: ndarray, axis: int = -1):  # !!!该实现无法被 jit
 
 
 def unbind(x: ndarray, axis: int = 0):  # !!!该实现无法被 jit
-    """torch.unbind 的 numpy 实现"""
+    """np.unbind 的 numpy 实现"""
     axis = axis % x.ndim
     i1 = [slice(None)] * axis
     return [x[*i1, i] for i in range(x.shape[axis])]  # (...,1,...)
 
 
 def split_(x: ndarray, split_size_or_sections: int | Sequence[int], axis: int = -1):
-    """torch.split 的 numpy 实现"""
+    """np.split 的 numpy 实现"""
     if isinstance(split_size_or_sections, Sequence):
         idxs = bkbn.cumsum(split_size_or_sections)[:-1]
         rst = bkbn.split(x, idxs, axis=axis)
@@ -101,7 +106,7 @@ def split_(x: ndarray, split_size_or_sections: int | Sequence[int], axis: int = 
 
 def flatten(x: ndarray, start_dim: int = 0, end_dim: int = -1) -> ndarray:
     """
-    torch.flatten 的 numpy 实现
+    np.flatten 的 numpy 实现
     """
     end_dim = end_dim % x.ndim
     start_dim = start_dim % x.ndim
@@ -111,7 +116,7 @@ def flatten(x: ndarray, start_dim: int = 0, end_dim: int = -1) -> ndarray:
 
 def unflatten(x: ndarray, dim: int, sizes: Sequence[int]) -> ndarray:
     """
-    torch.unflatten 的 numpy 实现
+    np.unflatten 的 numpy 实现
     """
 
     dim = dim % x.ndim
@@ -119,7 +124,7 @@ def unflatten(x: ndarray, dim: int, sizes: Sequence[int]) -> ndarray:
     return x.reshape(newshape)
 
 
-def norm_(x, p=2, dim=-1, keepdim=True) -> ndarray:
+def norm_(x, p=2, dim=-1, keepdim=True) -> Float_NDArr:
     r"""
     Args:
         x: Input tensor of shape=(..., d).
@@ -148,24 +153,22 @@ def affcmb(a, b, t) -> ndarray:
     return a + (b - a) * t
 
 
-def affcmb_inv(a, b, y) -> ndarray:
+def affcmb_inv(a, b, y, eps: float = 1e-8) -> Float_NDArr:
     """
-    仿射组合的逆运算
+    仿射组合的逆运算(归一化)
 
     Args:
         a: First scalar or tensor, shape=(...,d|1).
         b: Second scalar or tensor, shape=(...,d|1).
-        y: a+w*(b-a), shape=(..., d|1)
+        y: a+t*(b-a), shape=(..., d|1)
     Returns:
-        w: 仿射系数, shape=(...,d).
+        t: 仿射系数, shape=(...,d).
     """
     a = asarray(a)
     m = b - a
     y_ = y - a
-    eps = 1e-6
-    _mis0 = abs_(m) < eps
-    _fix = _mis0 + 0.0
-    w = (y_ * (1 - _fix)) / (m + _fix)
+    _bad = abs_(m) < eps
+    w = where(_bad, 0, y_) / where(_bad, 1, m)
     return w
 
 
@@ -217,10 +220,11 @@ def is_normalized(v: ndarray, eps: float = 1e-6) -> BoolNDArr:
 
 def modin(x: NDArrOrNum, a: NDArrOrNum, m: NDArrOrNum) -> ndarray:
     r"""
-    a+((x-a) mod m)
-    if m=0, return a
-    if m>0, y $\in [a,a+m)$
-    if m<0, y $\in (a-m,a]$
+    $x\mapsto y=a+((x-a) mod m)$
+
+    if m=0, return a\
+    if m>0, y $\in [a,a+m)$\
+    if m<0, y $\in (a-m,a]$\
     Args:
         x: 输入数组, shape=(...,)
         a: 周期开始值, shape=(...,)
@@ -249,7 +253,11 @@ def delta_reg(a: NDArrOrNum, b: NDArrOrNum, r: NDArrOrNum = _PI) -> ndarray:
     r"""
     计算 a-b 在 mod R=(-r,r] 上的最小幅度值
 
-    即 $\argmin_{ d\in R=(-r,r]: d=a-b (mod |R|)} |d|$
+    即
+    $$
+    \argmin_{ d\in R=(-r,r]: d=a-b (mod |R|)} |d|
+    $$
+
     Args:
         a: target, scalar|shape=(...,)
         b: input, scalar|shape=(...,)

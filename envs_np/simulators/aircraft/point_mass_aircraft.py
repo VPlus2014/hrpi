@@ -3,7 +3,7 @@ import math
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from ..base_model import SupportedIndexType
+    from ..proto4model import SupportedIndexType
 # import torch
 import numpy as np
 from typing import Literal
@@ -125,7 +125,7 @@ class PointMassAircraft(BaseAircraft):
         """
         控制量约定: 全部在 [-1,1] 内!
         """
-        logr = self.logr
+        logr = self.logger
         if not isinstance(action, ndarray):
             action = ndarray(action, device=self.device, dtype=self.dtype)
 

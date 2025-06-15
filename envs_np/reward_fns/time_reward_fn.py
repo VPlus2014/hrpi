@@ -2,23 +2,22 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from ..proto4venv # import torchSyncVecEnv
-    from .base_reward_fn import _EnvIndexType
+    from ..proto4venv import SyncVecEnv
+    from .proto4rf import EnvMaskType
 # import torch
 import math
-from .base_reward_fn import BaseRewardFn
+from .proto4rf import BaseRewardFn, RewardType
 
 
-class TimeRewardFn(BaseRewardFn):
-    def __init__(self, weight: float = 1) -> None:
-        super().__init__()
-        self.weight = weight
+class RF_TimeCost(BaseRewardFn):
+    def __init__(self, **kwargs) -> None:
+        super().__init__(**kwargs)
 
-    def reset(self, env: TorchSyncVecEnv, env_indices: _EnvIndexType = None):
+    def reset(self, env: SyncVecEnv, env_indices: EnvMaskType | None = None, **kwargs):
         pass
 
-    def forward(self, env: TorchSyncVecEnv, **kwargs) -> torch.Tensor | float:
-        # return self.weight * torch.ones(
+    def forward(self, env: SyncVecEnv, **kwargs) -> RewardType:
+        # return self.weight * np.ones(
         #     (env.num_envs, 1), device=env.device, dtype=env.dtype
         # )
-        return 1.0
+        return -1.0

@@ -36,17 +36,17 @@ from typing import Callable, Dict, List, Sequence, Tuple, TypeVar, Union, cast
 import numpy as np
 from pynput import keyboard
 from envs_np.simulators.decoy.base_decoy import BaseDecoy
-from envs_np.simulators.base_model import BaseModel
+from envs_np.simulators.proto4model import BaseModel
 from envs_np.simulators.missile import BaseMissile
 from envs_np.utils.tacview import TacviewRecorder, ACMI_Types, format_id
-from envs_np.utils.math_np import calc_zem, rpy2mat
+from envs_np.utils.math_np import calc_zem1, rpy2mat
 from envs_np.utils import math_np as math_ext
 from envs_np.utils.math_np import bkbn as np
 from envs_np.simulators.aircraft.p6dof import P6DOFPlane as Plane_
 from envs_np.simulators.missile.p6dof import (
     P6DOFMissile as Missile,
 )
-from envs_np.simulators.base_model import BaseModel
+from envs_np.simulators.proto4model import BaseModel
 from envs_np.simulators.decoy.dof0decoy import DOF0BallDecoy as Decoy
 from envs_np.utils import log_ext
 from envs_np.utils.time_ext import Timer_Pulse
@@ -178,9 +178,8 @@ def los_is_blocked_np(los: np.ndarray, rthres: np.ndarray):
     r__j = np.expand_dims(rthres, axis=-3)  # (...,1,n,1)
     R__j = np.expand_dims(R_, axis=-3)  # (...,1,n,1)
 
-    d_ij = calc_zem(los, _0f_d, _0f_d, los)[
-        0
-    ]  # (...,n,n,1) [...,i,j,:]:= p_i 到射线 p_j*[0,\infty) 的投影距离
+    d_ij = calc_zem1(los, -los)[0]  # (...,n,n,1)
+    # [...,i,j,:]:= p_i 到射线 p_j*[0,\infty) 的投影距离
     assert np.isfinite(d_ij).all(), "d_ij is not finite"
     s__j2 = (r__j**2 * ((R_i_) ** 2 - d_ij**2)) / (R__j**2 - r__j**2 + ~case1__j)
     rst1 = case1__j & (r_i_ > s__j2 + d_ij)  # (...,n,n,1)
@@ -414,7 +413,7 @@ def missile_regen(
             ]
         )
         # print(msg)
-        grp.logr.info(msg)
+        grp.logger.info(msg)
         recorder.add(recorder.format_bookmark(msg))
     return index
 
@@ -490,7 +489,7 @@ def decoy_regen(
                 if len(row)
             )
             recorder.add(recorder.format_bookmark(msg))
-            grp.logr.info(msg)
+            grp.logger.info(msg)
     return index
 
 
@@ -726,10 +725,11 @@ def game_run(
     pln_V_lb = Vmin
     pln_V_ub = 334 * 1.5
 
-    np_float = np.float64
+    use_float64 = True
+    ftype = np.float64 if use_float64 else np.float32
     device = "cpu"
     if device != "cpu":
-        print("CUDA 在这里不够快!")
+        print("CUDA 在小规模仿真里不够快!")
 
     # 干扰参数
     pln_objr = 10.0
@@ -770,25 +770,25 @@ def game_run(
 
     logr = log_ext.reset_logger(
         __name__ + "_game",
-        level=logging.DEBUG,
+        level=log_ext.DEBUG,
         file_path=str(runs_dir / "log.log"),
         file_append=False,
     )
     pln_logr = log_ext.reset_logger(
         __name__ + "_pln",
-        level=logging.DEBUG,
+        level=log_ext.DEBUG,
         file_path=str(runs_dir / "pln.log"),
         file_append=False,
     )
     enm_msl_logr = log_ext.reset_logger(
         logr.name + ("_msl"),
-        level=logging.DEBUG,
+        level=log_ext.DEBUG,
         file_path=str(runs_dir / "msl.log"),
         file_append=False,
     )
     decoy_logr = log_ext.reset_logger(
         logr.name + ("_decoy"),
-        level=logging.DEBUG,
+        level=log_ext.DEBUG,
         file_path=str(runs_dir / "decoy.log"),
         file_append=False,
     )
@@ -819,7 +819,7 @@ def game_run(
             acmi_type=pln_info.Type,
             call_sign=pln_info.CallSign,
             vis_radius=pln_objr,
-            dtype=np_float,
+            dtype=ftype,
         )
     else:
         agent = Missile(
@@ -828,7 +828,7 @@ def game_run(
             acmi_id=fri_pln_id_next,
             Vmin=pln_V_lb,
             Vmax=pln_V_ub,
-            dtype=np_float,
+            dtype=ftype,
             acmi_color=pln_info.Color,
             acmi_name="AIM-9M",
             acmi_type=ACMI_Types.Missile.value,
@@ -840,10 +840,10 @@ def game_run(
     agent.set_ic_tas((pln_V_lb + (pln_V_ub - pln_V_lb) * 0.8), None)
     agent.set_ic_rpy_ew(0, None)
     agent.set_ic_pos_e(
-        np.asarray([0, 0, -(hmax + hmin) * 0.5], dtype=np_float).reshape(1, 3),
+        np.asarray([0, 0, -(hmax + hmin) * 0.5], dtype=ftype).reshape(1, 3),
         None,
     )
-    agent.logr = pln_logr
+    agent.logger = pln_logr
     for iteam, msl_N in enumerate(
         [fri_msl_N, enm_msl_N],
     ):
@@ -857,7 +857,7 @@ def game_run(
             det_rmax=msl_det_rmax,
             det_fov_deg=msl_det_fov_deg,
             trk_fov_deg=msl_trk_fov_deg,
-            dtype=np_float,
+            dtype=ftype,
             acmi_color=msl_color,
             acmi_name="AIM-9M",
             acmi_type=ACMI_Types.Missile.value,
@@ -900,7 +900,7 @@ def game_run(
             enm_msl = msls
             enm_msl.DEBUG = _DEBUG
 
-    enm_msl.logr = enm_msl_logr
+    enm_msl.logger = enm_msl_logr
 
     decoys = Decoy(
         sim_step_size_ms=simdt_ms,
@@ -908,7 +908,7 @@ def game_run(
         group_shape=decoys_N,
         vis_radius=dec_objr,
         effect_duration=30.0,
-        dtype=np_float,
+        dtype=ftype,
         lat0=lat0,
         lon0=lon0,
         alt0=alt0,
@@ -917,7 +917,7 @@ def game_run(
         acmi_type=ACMI_Types.FlareDecoy.value,
         acmi_parent=agent.acmi_id,
     )
-    decoys.logr = decoy_logr
+    decoys.logger = decoy_logr
     decoys.DEBUG = _DEBUG
     for j in range(decoys_N):
         msk = index2mask(decoys.group_shape, j)
@@ -1031,7 +1031,7 @@ def game_run(
                     grp.reset(None)
                     if grp is agent:
                         grp.activate(None)
-                    grp.logr.debug(f"reset @Ep{sim_epi}")
+                    grp.logger.debug(f"reset @Ep{sim_epi}")
 
                 tmr_fresh.reset()
                 tmr_fps.reset()
@@ -1053,7 +1053,7 @@ def game_run(
                 if sim_k == 1 and f_set_pause and tacview_full:
                     f_set_pause(True)  # 先暂停游戏切换一下视角
                 tmr_fps.step()
-                recorder.add(recorder.format_time(get_simt()))
+                recorder.add(recorder.format_timestamp(get_simt()))
 
                 act = np.clip(get_action(), -1, 1)
 
@@ -1135,7 +1135,7 @@ def game_run(
                                     action.nz_cmd,
                                     action.droll_cmd,
                                 ],
-                                dtype=np_float,
+                                dtype=ftype,
                             ).reshape(1, -1),
                             linear=False,
                         )
@@ -1152,7 +1152,7 @@ def game_run(
                                     action.nz_cmd,
                                     action.droll_cmd,
                                 ],
-                                dtype=np_float,
+                                dtype=ftype,
                             ).reshape(1, -1)
                         )
                     action0 = action
@@ -1190,11 +1190,11 @@ def game_run(
                             grp.observe(
                                 np.asarray(
                                     enm_pos,
-                                    dtype=np_float,
+                                    dtype=ftype,
                                 ),
                                 np.asarray(
                                     enm_vel,
-                                    dtype=np_float,
+                                    dtype=ftype,
                                 ),
                                 np.asarray(
                                     enm_id,
@@ -1289,7 +1289,7 @@ def game_run(
 
                         elif grp.is_dying().reshape(-1, 1)[iu, [0]].item():
                             grp.set_status(grp.STATUS_DEAD, imsk)
-                            recorder.add(recorder.format_destroy(u_uidh))
+                            recorder.add(recorder.format_destroyed(u_uidh))
                             recorder.add(recorder.format_remove(u_uidh))
                             uids_to_del.append(u_uidh)
 

@@ -5,70 +5,69 @@ from ._head import *
 # from numba import jit
 
 
-def _calc_zem(
-    p1: ndarray,
-    v1: ndarray,
-    p2: ndarray,
-    v2: ndarray,
-    tmin: float = 0.0,
-    tmax: float = math.inf,
+def _calc_zem1(
+    los: ndarray,
+    dlos: ndarray,
+    tmin: float | ndarray = 0.0,
+    tmax: float | ndarray = math.inf,
+    eps: float = 1e-12,
 ) -> tuple[ndarray, ndarray]:
-    assert len(p1.shape) == len(v1.shape) == len(p2.shape) == len(v2.shape) >= 2, (
-        "p1,v1,p2,v2 must have the same dims>=2, got.",
-        p1.shape,
-        v1.shape,
-        p2.shape,
-        v2.shape,
+    assert len(los.shape) == len(dlos.shape), (
+        "p1,v1,p2,v2 must have the same dims, got.",
+        len(los.shape),
+        len(dlos.shape),
     )
-    p1 = unsqueeze(p1, -2)  # (...,n,1,d)
-    v1 = unsqueeze(v1, -2)  # (...,n,1,d)
-    p2 = unsqueeze(p2, -3)  # (...,1,m,d)
-    v2 = unsqueeze(v2, -3)  # (...,1,m,d)
-    # p1, v1, p2, v2 = _broadcast_arrays(p1, v1, p2, v2)  # (...,n,m,d)
-    dp = p1 - p2  # (...,n,m,d)
-    dv = v1 - v2  # (...,n,m,d)
-    pv = (dp * dv).sum(-1, keepdims=True)  # (...,n,m,1)
-    vv = (dv * dv).sum(-1, keepdims=True)  # (...,n,m,1)
-    vvis0 = vv <= 1e-12
-    # _0f = _zeros_like(pv)  # (...,n,m,1)
-    t_miss = where(vvis0, tmin, -pv / (vv + vvis0))  # (...,n,m,1)
-    if not isfinite(t_miss).all():
-        raise ValueError("t_miss contains NaN or inf.")
+    dp = los
+    dv = dlos
+    pv: ndarray = (dp * dv).sum(-1, keepdims=True)  # (...,1)
+    vv: ndarray = (dv * dv).sum(-1, keepdims=True)  # (...,1)
+    # v\dot (p+t v)=0
+    t_miss = -pv / vv.clip(eps, None)  # \in\R; |dv|=0 -> t_*=0
     t_miss = clip(t_miss, tmin, tmax)  # 投影
-    md = norm(dp + dv * t_miss, axis=-1, keepdims=True)  # (...,n,m,1)
+    ibad = ~isfinite(t_miss)
+    if ibad.any():
+        raise ValueError("t_miss contains NaN or inf.", where(ibad))
+    md = norm(dp + dv * t_miss, axis=-1, keepdims=True)  # (...,1)
     return md, t_miss
 
 
-def calc_zem(
-    p1: ndarray,
-    v1: ndarray,
-    p2: ndarray,
-    v2: ndarray,
-    tmin: float = 0.0,
-    tmax: float = math.inf,
+def calc_zem1(
+    los: ndarray,
+    dlos: ndarray,
+    tmin: float | ndarray = 0.0,
+    tmax: float | ndarray = math.inf,
+    eps: float = 1e-12,
 ) -> tuple[ndarray, ndarray]:
     r"""
-    零控脱靶量
+    零控脱靶量(1阶)
 
     $$
-    \min_\{d(t)=\|(p_1+t v_1)-(p_2+t v_2)\|_2 | t\in T=[t_\min,t_\max]\}
+    \min_\{d(t)=\|p+t*v\|_2 | t\in T=[t_\min,t_\max]\}
     $$
 
     Args:
-        p1: shape=(...,n|1,d) 群体1的初始位置(t=0)
-        v1: shape=(...,n|1,d) 群体1的速度
-        p2: shape=(...,m,d) 群体2的初始位置(t=0)
-        v2: shape=(...,m,d) 群体2的速度
-        tmin: 最小时间, 默认为0
-        tmax: 最大时间, 默认为 \infty
+        los: shape=(...,d) 视线
+        dlos: shape=(...,d) 视线速度
+        tmin: 最小时间, float|shape=(...,1), 默认为 0
+        tmax: 最大时间, float|shape=(...,1), 默认为 inf
     Returns:
-        MD: 脱靶量 shape=(...,n,m,1)\
-                $MD[i,j]:=min_{t\in T} d(t)$\
+        MD: 脱靶量 shape=(...,1)\
+                $MD :=\min_{t\in T} d(t)$\
 
-        t_miss: 脱靶时间 shape=(...,n,m,1)\
-                $t_{miss}[i,j]:=\min\argmin_{t\in T} d(t)$\
+        t_miss: 脱靶时间 shape=(...,1)\
+                $t_* :=\min{t\in T: d(t)=MD}$\
     """
-    return _calc_zem(p1, v1, p2, v2, tmin, tmax)
+    return _calc_zem1(los, dlos, tmin, tmax, eps)
+
+
+def _calc_zem2(
+    los: ndarray,
+    dlos: ndarray,
+    ddlos: ndarray,
+    tmin: float | ndarray = 0.0,
+    tmax: float | ndarray = math.inf,
+):
+    raise NotImplementedError
 
 
 # !!!
@@ -92,9 +91,7 @@ def _los_is_visible_v1(
     #
     mi = unsqueeze(mask, -2)  # (...,N,1,1)
     mj = unsqueeze(mask, -3)  # (...,1,N,1)
-    dij = calc_zem(_0f3, los, los, _0f3, 0.0, 1.0)[
-        0
-    ]  # (...,N,N,1) |p_j-\Pi_{I_1 p_i}p_j|
+    dij = calc_zem1(-los, los, 0.0, 1.0)[0]  # (...,N,N,1) |p_j-\Pi_{I_1 p_i}p_j|
     rj = unsqueeze(rball, -3)  # (...,1,N,1)
     fij = dij > rj  # (...,N,N,1) (I_1 p_i)\cap\bar B(p_j,r_j)=\emptyset
     #
@@ -156,16 +153,16 @@ def los_is_visible(
     return _los_is_visible_v1(los, rball, mask)
 
 
-def _vec_cosine(v1: ndarray, v2: ndarray, n1: ndarray, n2: ndarray):
-    eps = 1e-6
-    v1_is_zero = n1 < eps
-    v2_is_zero = n2 < eps
-    any_zero = v1_is_zero | v2_is_zero
-    c = where(
-        any_zero,
-        zeros([1] * any_zero.ndim, n1.dtype),
-        sum_(v1 * v2, -1, keepdims=True) / (n1 * n2).clip(eps, None),
-    )
+def _vec_cosine(v1: ndarray, v2: ndarray, n1: ndarray, n2: ndarray, eps: float = 1e-6):
+    # v1_is_zero = n1 < eps
+    # v2_is_zero = n2 < eps
+    # any_zero = v1_is_zero | v2_is_zero
+    # c = where(
+    #     any_zero,
+    #     zeros([1] * any_zero.ndim, n1.dtype),
+    #     sum_(v1 * v2, -1, keepdims=True) / (n1 * n2).clip(eps, None),
+    # )
+    c = sum_(v1 * v2, -1, keepdims=True) / (n1 * n2).clip(eps, None)
     return c
 
 
@@ -176,9 +173,9 @@ def vec_cosine(
     n2: ndarray | float | None = None,
 ):
     r"""
-    计算两个向量的余弦值
+    计算两个向量的余弦相似度
     $$
-    cos(v1,v2)=\frac{v1\cdot v2}{|v1||v2|}
+    \cos\angle(v1,v2)=\frac{v1\cdot v2}{|v1||v2|}
     $$
     Args:
         v1 (_NDArr): 向量1 shape: (...,3)
@@ -187,7 +184,7 @@ def vec_cosine(
         n2 (_NDArr|float|None): 向量2的长度 shape: (...,1) or scalar
 
     Returns:
-        _NDArr: 余弦值 shape: (...,1)
+        _NDArr: 余弦相似度 shape: (...,1)
     """
     if not isinstance(n1, ndarray):
         n1 = norm_(v1)

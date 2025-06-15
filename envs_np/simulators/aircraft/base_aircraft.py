@@ -2,7 +2,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 # import torch
-from ..base_model import BaseModel, BaseModel
+from ..proto4model import BaseModel, BaseModel
 from ...utils.math_np import (
     BoolNDArr,
     ndarray,
@@ -12,7 +12,9 @@ from ...utils.math_np import (
 
 if TYPE_CHECKING:
     from ..missile import BaseMissile
-    from ..base_model import SupportedMaskType
+    from ..proto4model import SupportedMaskType
+
+from ..proto4model import ACMI_Types
 
 
 class BaseAircraft(BaseModel):
@@ -25,7 +27,7 @@ class BaseAircraft(BaseModel):
     def __init__(
         self,
         carried_missiles: BaseMissile | None = None,
-        acmi_type="Plane",
+        acmi_type=ACMI_Types.Plane.value,
         **kwargs,
     ) -> None:
         """飞机基类 BaseAircraft

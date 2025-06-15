@@ -1,9 +1,11 @@
 # import torch
 from typing import TYPE_CHECKING
-from ..base_termination_fn import BaseTerminationFn
+
+import numpy as np
+from ..proto4tc import BaseTerminationFn
 
 if TYPE_CHECKING:
-    from environments_th import EvasionEnv
+    from ...evasion import EvasionEnv
 
 
 class AircraftSurvivalTerminationFn(BaseTerminationFn):
@@ -13,5 +15,5 @@ class AircraftSurvivalTerminationFn(BaseTerminationFn):
     def reset(self, env: "EvasionEnv", **kwargs) -> None:
         pass
 
-    def forward(self, env: "EvasionEnv", **kwargs) -> torch.Tensor:
+    def forward(self, env: "EvasionEnv", **kwargs) -> np.ndarray:
         return env.missile.is_missed()

@@ -5,10 +5,11 @@ from typing import Any, Callable, TYPE_CHECKING, Generic
 
 import gymnasium
 import numpy as np
+
 # import torch
 
 if TYPE_CHECKING:
-    from ..proto4venv # import torchSyncVecEnv
+    from ..proto4venv import SyncVecEnv
     from gymnasium.core import ObsType, ActType
 
 
@@ -19,7 +20,7 @@ class EnvInPool(gymnasium.Env[ObsType, ActType]):
         raise NotImplementedError("TODO: init env")
 
     def step(self, action: ActType):
-        tsk = self._parent.send(self._env_idx, np.asarray(action).reshape(1, axis=-1))
+        tsk = self._parent.send(self._env_idx, np.asarray(action).reshape(1, -1))
         rst = tsk.wait()
         return rst
 
@@ -37,7 +38,7 @@ class EnvInPool(gymnasium.Env[ObsType, ActType]):
 
 class AsyncEnvPool:
 
-    def __init__(self, venv: TorchSyncVecEnv, use_network=False) -> None:
+    def __init__(self, venv: SyncVecEnv, use_network=False) -> None:
         """
         将原向量化环境重新打散为多个单环境, 为兼容标准RL算法框架做适配
         TODO: 按照现行逻辑, Pool必须实现异步向量化, 这样就必须要通过 网络/跨进程通信 来实现
@@ -76,7 +77,7 @@ class AsyncEnvPool:
     def send(self, env_idx: int, action: np.ndarray | None):
         core = self._core
         buf = self._grp
-        buf[env_idx].acts.append(action.reshape(1, axis=-1))
+        buf[env_idx].acts.append(action.reshape(1, -1))
         return rst
 
     def reset(self, env_idx: int, **kwargs) -> np.ndarray:

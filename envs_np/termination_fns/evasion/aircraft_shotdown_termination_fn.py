@@ -1,6 +1,6 @@
 # import torch
 from typing import TYPE_CHECKING
-from ..base_termination_fn import BaseTerminationFn
+from ..proto4tc import BaseTerminationFn
 
 if TYPE_CHECKING:
     from environments_th import EvasionEnv
@@ -13,5 +13,5 @@ class AircraftShotdownTerminationFn(BaseTerminationFn):
     def reset(self, env: "EvasionEnv", **kwargs) -> None:
         pass
 
-    def forward(self, env: "EvasionEnv", **kwargs) -> torch.Tensor:
+    def forward(self, env: "EvasionEnv", **kwargs) -> np.ndarray:
         return env.aircraft.is_shotdown()

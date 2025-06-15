@@ -21,7 +21,7 @@ from ...utils.math_np import (
     split_,
     cat,
     BoolNDArr,
-    DoubleNDArr,
+    Float64NDArr,
     pow,
     normalize,
     unsqueeze,
@@ -280,8 +280,8 @@ class P6DOFMissile(BaseMissile):
         N = self.group_shape[-1]  # 导弹数
         iw_e = unsqueeze(quat_rotate(self._Q_ew, self._E1F), -2)  # (...,N,1,d)
         los_e = self._all_los_e  # (...,N,n,3)
-        dij: DoubleNDArr = clip(norm_(los_e, 2, -1, True), 1e-3, None)  # (...,N,n,1)
-        cosa: DoubleNDArr = (los_e * iw_e).sum(-1, keepdims=True) / dij  # (...,N,n,1)
+        dij: Float64NDArr = clip(norm_(los_e, 2, -1, True), 1e-3, None)  # (...,N,n,1)
+        cosa: Float64NDArr = (los_e * iw_e).sum(-1, keepdims=True) / dij  # (...,N,n,1)
         mask = self._all_los_mask  # (...,N,n,1)
         in_ball = (dij < self._det_rmax) & mask  # 在探测球内
         in_detcone = cosa > self._det_cosa  # 在探测锥内 (...,N,n,1)
@@ -302,13 +302,13 @@ class P6DOFMissile(BaseMissile):
         w1: BoolNDArr = where(anytrk, cantrk, candet)  # 视野过滤(>where) (N,n,1)
 
         all_dlos = self._all_dlos_e  # (N,n,3)
-        ener_V: DoubleNDArr = pow(all_dlos, 2).sum(-1, keepdims=True)  # (N,n,1)
+        ener_V: Float64NDArr = pow(all_dlos, 2).sum(-1, keepdims=True)  # (N,n,1)
 
         w2 = asarray(
             (w1 * ener_V),
             dtype=dtype,
         )  # (N,n,1)
-        w2sum: DoubleNDArr = w2.sum(-2, keepdims=True)  # (N,1,1)
+        w2sum: Float64NDArr = w2.sum(-2, keepdims=True)  # (N,1,1)
         w2_ = where(anydet, w2 / w2sum, 0)  # (N,n,1)
         all_los = self._all_los_e  # (N,n,3)
         tgt_los = (w2_ * all_los).sum(-2)  # (N,3)
@@ -391,7 +391,7 @@ class P6DOFMissile(BaseMissile):
         if target_id is not None:
             self.target_id[msk, :] = target_id
             if self.DEBUG:
-                self.logr.debug(
+                self.logger.debug(
                     ("target_id<-{}".format(self.target_id.ravel()[[0]].item()),)
                 )
 
@@ -416,7 +416,7 @@ class P6DOFMissile(BaseMissile):
                 ny_cmd 侧向过载, unit: G
                 nz_cmd 法向过载系数(NED +Z 为正), unit: G
         """
-        logr = self.logr
+        logr = self.logger
         if not isinstance(value, ndarray):
             value = ndarray(
                 value,
@@ -476,7 +476,7 @@ class P6DOFMissile(BaseMissile):
             Qew_next (ndarray): 地轴/风轴四元数, shape: (N,4)
         """
         ode_solver = ode_rk23
-        logr = self.logr
+        logr = self.logger
 
         ny, nz = unbind_keepdim(action, -1)  # (...,1)
 
@@ -511,7 +511,7 @@ class P6DOFMissile(BaseMissile):
         """动力学"""
         p_e, tas, Qew, mu, mass = split_(X, [3, 1, 4, 1, 1], -1)
 
-        logr = self.logr
+        logr = self.logger
         _0f = self._0F
 
         mask = t < self._t_thrust_s  # 是否推进 (...,1)

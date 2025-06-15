@@ -1,12 +1,13 @@
 from __future__ import annotations
 from typing import TYPE_CHECKING
+
 # import torch
 from abc import abstractmethod
 
-from ..base_model import BaseModel, BaseModel
+from ..proto4model import BaseModel, BaseModel
 
 if TYPE_CHECKING:
-    from ..base_model import SupportedMaskType
+    from ..proto4model import SupportedMaskType
 from ...utils.tacview import ACMI_Types
 
 

@@ -22,12 +22,7 @@ import time
 from typing import Any, cast
 import numpy as np
 import torch
-import gymnasium as gym
 from tqdm import tqdm
-from contextlib import ContextDecorator
-
-from tools import init_seed, as_np, as_tsr, ConextTimer
-
 from environments_th.simulators.aircraft.p6dof import P6DOFPlane as Plane_th
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 
@@ -38,7 +33,7 @@ def run_kern(
     use_tqdm=True,
     seed=0,
     device="cpu",
-    dtype=torch.float32,
+    dtype=torch.float64,
 ):
     """Sync Simulation"""
     rng = np.random.default_rng(seed)
@@ -126,7 +121,7 @@ def main():
     max_steps = 10
     config: dict[str, Any] = dict(
         # device="cpu",
-        dtype=torch.float32,
+        dtype=torch.float64,
         batch_size=batch_size,
         max_steps=max_steps,
         use_tqdm=True,

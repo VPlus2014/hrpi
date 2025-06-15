@@ -1,6 +1,6 @@
 # import torch
 from typing import TYPE_CHECKING
-from ..base_reward_fn import BaseRewardFn
+from ..proto4rf import BaseRewardFn
 from environments_th.utils.math_pt import euler_from_quat, ned2aer
 
 if TYPE_CHECKING:
@@ -17,5 +17,5 @@ class AircraftShotdownRewardFn(BaseRewardFn):
     def reset(self, env, env_indices, **kwargs):
         pass
 
-    def forward(self, env, plane, **kwargs) -> torch.Tensor:
+    def forward(self, env, plane, **kwargs) -> np.ndarray:
         return -unit.is_shotdown()

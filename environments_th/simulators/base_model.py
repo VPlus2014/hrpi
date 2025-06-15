@@ -24,6 +24,7 @@ _SupportedIndexType = Union[
 ]
 _ShapeLike = Union[Sequence[int], torch.Size]
 _SliceNone = slice(None)
+DeviceLike = Union[str, torch.device]
 
 
 class BaseModel(ABC):
@@ -38,8 +39,8 @@ class BaseModel(ABC):
     def __init__(
         self,
         group_shape: Sequence[int] | int = 1,
-        device=torch.device("cpu"),
-        dtype=torch.float32,
+        device: DeviceLike = "cpu",
+        dtype: torch.dtype = torch.float64,
         sim_step_size_ms: int = 1,
         use_gravity: bool = True,
         g: torch.Tensor | float = 9.8,  # 默认重力加速度 m/s^2
@@ -66,7 +67,7 @@ class BaseModel(ABC):
             所有非标量数据都是矩阵;
         Args:
             sim_step_size_ms (int, optional): 仿真步长, 单位:ms. Defaults to 1.
-            group_shape=(int|Sequence[int], optional): 组容量N/形状(N1,...,Nn), Defaults to 1.
+            group_shape (int|Sequence[int], optional): 组容量N/形状(N1,...,Nn), Defaults to 1.
             device (torch.device, optional): 所在torch设备. Defaults to torch.device("cpu").
             dtype (torch.dtype, optional): torch浮点类型. Defaults to torch.float32.
             use_gravity (bool, optional): 是否启用重力(无则不支持计算重力). Defaults to True.
@@ -266,7 +267,7 @@ class BaseModel(ABC):
 
     def proc_index(self, index: _SupportedIndexType | None):
         """对索引做预处理"""
-        if index is None or index ==Ellipsis:
+        if index is None or index == Ellipsis:
             idxs = slice(None)
         elif isinstance(index, (slice, torch.Tensor)):
             idxs = index

@@ -217,6 +217,7 @@ class RETrajReplayBuffer:
         term: np.ndarray,
         trunc: np.ndarray,
         act_log_prob: np.ndarray,
+        done: np.ndarray|None=None,
     ):
         """
         面向并行env添加最新的一步数据
@@ -236,7 +237,8 @@ class RETrajReplayBuffer:
             self._num_envs,
         )
         logr = self.logr
-        done = term | trunc
+        if done is None:
+            done = term | trunc
         # 1. 常规数据
         traj_idx = self._ptrE2N
         t_idx = self._alens[traj_idx]

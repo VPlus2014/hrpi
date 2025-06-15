@@ -21,7 +21,7 @@ from ...utils.math_np import (
 )
 
 if TYPE_CHECKING:
-    from ..base_model import SupportedMaskType as SupportedMaskType
+    from ..proto4model import SupportedMaskType as SupportedMaskType
 from ...utils.tacview import ACMI_Types
 
 _DEBUG = True
@@ -82,7 +82,7 @@ class DOF0BallDecoy(BaseDecoy):
         self._propagate(mask)
 
     def _propagate(self, mask: SupportedMaskType | None):
-        logr = self.logr
+        logr = self.logger
         mask = self.proc_to_mask(mask)
         is_alive = self.is_alive()
         is_timeout = self.sim_time_s() >= self._effect_duration
@@ -122,7 +122,7 @@ class DOF0BallDecoy(BaseDecoy):
             Qew_next (NDArr): 地轴/风轴四元数, shape: (...,4)
         """
         ode_solver = ode_rk23
-        logr = self.logr
+        logr = self.logger
 
         dt_s = dt_s * (self.is_alive() & mask[..., None])
 
