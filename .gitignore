@@ -5,3 +5,4 @@
 /tmp/
 test.py
 tmp_test.py
+__pycache__/
