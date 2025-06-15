@@ -14,7 +14,7 @@ if TYPE_CHECKING:
 
 
 class RF_GoalDistance(BaseRewardFn):
-
+    """距离代价"""
     def __init__(
         self,
         use_dR: bool = False,  # 1:路程, 0:平均距离

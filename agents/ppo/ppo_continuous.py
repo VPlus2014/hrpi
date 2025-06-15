@@ -12,13 +12,13 @@ from typing import cast
 from tianshou.data import Batch
 from torch.utils.data.sampler import BatchSampler, SubsetRandomSampler
 from torch.nn.utils import clip_grad_norm_, clip_grad_value_
-
+from ..utils import affcmb_inv
 
 as_tsr = torch.asarray
 _DEBUG = True
 
 
-def as_np(x: torch.Tensor | np.ndarray) -> np.ndarray:
+def as_np(x: np.ndarray | torch.Tensor) -> np.ndarray:
     if isinstance(x, torch.Tensor):
         return x.detach().cpu().numpy()
     elif isinstance(x, np.ndarray):
@@ -61,7 +61,6 @@ class PPOContinuous(Agent):
         repeat: int,
         adam_eps: float = 1e-8,
         num_envs: int = 1,
-        env_out_torch=True,
         gae_lambda: float = 0.8,
         gae_horizon: int = 100,
         gae_forward=False,
@@ -106,7 +105,6 @@ class PPOContinuous(Agent):
         self.adam_eps = adam_eps
         self.use_grad_clip = use_grad_clip
         self.use_adv_norm = use_adv_norm
-        self.env_is_torch = env_out_torch
 
         # 缓存属性
         actmin = torch.from_numpy(action_space.low).to(
@@ -129,13 +127,10 @@ class PPOContinuous(Agent):
         obsmax = torch.from_numpy(observation_space.high).to(
             device=self.device, dtype=self.dtype
         )
-        obsspan = obsmax - obsmin
         self.register_buffer("_buf_obs_min", obsmin)
         self.register_buffer("_buf_obs_max", obsmax)
-        self.register_buffer("_buf_obs_span", obsspan)
         self._buf_obs_min = self.get_buffer("_buf_obs_min")
         self._buf_obs_max = self.get_buffer("_buf_obs_max")
-        self._buf_obs_span = self.get_buffer("_buf_obs_span")
 
         self.actor = GaussianActor(
             state_dim=observation_space.shape[0],
@@ -271,7 +266,12 @@ class PPOContinuous(Agent):
             self.state = state  # 存储当前环境状态
 
         # 状态归一化
-        x = (state - self.observation_min) / self._buf_obs_span  # (...,dimX)
+        _bshp = (1,) * len(state.shape[:-1]) + (-1,)
+        x = affcmb_inv(
+            self.observation_min.view(_bshp),
+            self.observation_max.view(_bshp),
+            state,
+        )  # (...,dimX)
         _shphd = x.shape[:-1]
         # x = x.reshape(-1, x.shape[-1])  # (N, dimX)
         if _DEBUG:
@@ -330,15 +330,15 @@ class PPOContinuous(Agent):
     def post_act(
         self,
         obs: np.ndarray | torch.Tensor,
-        act: torch.Tensor | np.ndarray,  # 环境动作
-        act_log_prob: torch.Tensor | np.ndarray,
-        obs_next: torch.Tensor | np.ndarray,
-        rew: torch.Tensor | np.ndarray,
-        terminated: torch.Tensor | np.ndarray,
-        truncated: torch.Tensor | np.ndarray,
+        act: np.ndarray | torch.Tensor,  # 环境动作
+        act_log_prob: np.ndarray | torch.Tensor,
+        obs_next: np.ndarray | torch.Tensor,
+        rew: np.ndarray | torch.Tensor,
+        terminated: np.ndarray | torch.Tensor,
+        truncated: np.ndarray | torch.Tensor,
         global_step: int,
-        final_obs: torch.Tensor | np.ndarray,
-        env_indices: torch.Tensor | None = None,
+        done: np.ndarray | torch.Tensor | None = None,
+        mask: np.ndarray | torch.Tensor | None = None,
     ) -> None:
         """收集数据"""
         use_torch = False
@@ -360,63 +360,71 @@ class PPOContinuous(Agent):
             pass
         obs = as_np(obs)
         act = as_np(act)
+        obs2 = as_np(obs_next)
         rew = as_np(rew)
         terminated = as_np(terminated)
         truncated = as_np(truncated)
         act_log_prob = as_np(act_log_prob)
-        final_obs = as_np(final_obs)
         done = terminated | truncated
-
-        obs2 = np.where(done, final_obs, obs_next)  # 真正的后继状态
-
-        index_store = slice(None) if env_indices is None else env_indices
-        if not use_torch and isinstance(index_store, torch.Tensor):
-            index_store = as_np(index_store)
-        current_iteration_batch = cast(
-            RolloutBatchProtocol,
-            Batch(
-                obs=obs[index_store],  # (B,dimX)
-                act=act[index_store],  # (B,dimA)
-                act_log_prob=act_log_prob[index_store],  # (B,1)
-                obs_next=obs2[index_store],  # (B,dimX)
-                rew=rew[index_store],  # (B,1)
-                terminated=terminated[index_store],  # (B,1)
-                truncated=truncated[index_store],  # (B,1)
-            ),
-        )
+        if mask is None:
+            index_store = slice(None)
+        else:
+            index_store = as_np(mask).ravel()
+            if index_store.dtype == np.bool_:
+                index_store = np.where(index_store)[0]
+        # current_iteration_batch = cast(
+        #     RolloutBatchProtocol,
+        #     Batch(
+        #         obs=obs[index_store],  # (B,dimX)
+        #         act=act[index_store],  # (B,dimA)
+        #         act_log_prob=act_log_prob[index_store],  # (B,1)
+        #         obs_next=obs2[index_store],  # (B,dimX)
+        #         rew=rew[index_store],  # (B,1)
+        #         terminated=terminated[index_store],  # (B,1)
+        #         truncated=truncated[index_store],  # (B,1)
+        #     ),
+        # )
         if isinstance(self.replay_buffer, RETrajReplayBuffer):
+            # self.replay_buffer.add(
+            #     obs=cast(np.ndarray, current_iteration_batch.obs),
+            #     act=cast(np.ndarray, current_iteration_batch.act),
+            #     obs_next=cast(np.ndarray, current_iteration_batch.obs_next),
+            #     rew=cast(np.ndarray, current_iteration_batch.rew),
+            #     term=cast(np.ndarray, current_iteration_batch.terminated),
+            #     trunc=cast(np.ndarray, current_iteration_batch.truncated),
+            #     act_log_prob=cast(np.ndarray, current_iteration_batch.act_log_prob),
+            # )
             self.replay_buffer.add(
-                obs=cast(np.ndarray, current_iteration_batch.obs),
-                act=cast(np.ndarray, current_iteration_batch.act),
-                obs_next=cast(np.ndarray, current_iteration_batch.obs_next),
-                rew=cast(np.ndarray, current_iteration_batch.rew),
-                term=cast(np.ndarray, current_iteration_batch.terminated),
-                trunc=cast(np.ndarray, current_iteration_batch.truncated),
-                act_log_prob=cast(np.ndarray, current_iteration_batch.act_log_prob),
+                obs=obs[index_store],
+                act=act[index_store],
+                obs_next=obs2[index_store],
+                rew=rew[index_store],
+                term=terminated[index_store],
+                trunc=truncated[index_store],
+                act_log_prob=act_log_prob[index_store],
+                done=done[index_store],
             )
         else:
             raise NotImplementedError
 
         # 统计
-        self.returns[...] += as_np(rew)
-        done = as_np(terminated | truncated).ravel()  # (B,)
+        self.returns[...] += rew
+        done = done.ravel().astype(np.bool_)  # (B,)
         if done.any():
-            indices = np.where(done)[0]
-
             if self.writer:
-                rets = cast(np.ndarray, self.returns[indices])
+                rets = self.returns[done]
                 self.writer.add_scalar(
                     f"return/{self.name}_mean",
                     np.mean(rets).item(),
                     global_step=global_step,
                 )
-                if len(indices) > 1:
+                if len(done) > 1:
                     self.writer.add_scalar(
                         f"return/{self.name}_std",
                         np.std(rets).item(),
                         global_step=global_step,
                     )
-            self.returns[indices] = 0.0
+            self.returns[done] = 0.0
 
     def update(self, global_step: int):
         logr = self.logr

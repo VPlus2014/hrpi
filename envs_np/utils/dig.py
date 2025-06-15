@@ -3,7 +3,7 @@ from typing import Any, Generic, TypeVar
 from types import GenericAlias
 from typing import Callable
 
-_OFF = False  # 关闭. 建议内存充足时开启
+_OFF = False
 _PREFIX = "__DIG__"
 _NOT_FOUND = object()
 

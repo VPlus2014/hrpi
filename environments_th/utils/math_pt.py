@@ -52,22 +52,22 @@ _Tensor = torch.Tensor
 _T = TypeVar("_T", _Tensor, torch.NumberType, float, int)
 
 
-def affcmb(a, b, w):
+def affcmb(a, b, t):
     """Affine combination of two tensors.
 
     $$
-    (1-w) * a + w * b
+    (1-t) * a + t * b
     $$
 
     Args:
         a: First scalar or tensor, shape=(...,d).
         b: Second scalar or tensor, shape=(...,d).
-        w: Weights for the affine combination, shape=(..., 1|dims).
+        t: Weights for the affine combination, shape=(..., 1|dims).
 
     Returns:
         Affine combination of a and b, shape=(...,d).
     """
-    return a + (b - a) * w
+    return a + (b - a) * t
 
 
 def affcmb_inv(a, b, y):
@@ -80,14 +80,13 @@ def affcmb_inv(a, b, y):
         y: a+w*(b-a), shape=(..., 1)
 
     Returns:
-        w: 仿射系数, shape=(...,d).
+        t: 仿射系数, shape=(...,d).
     """
     m = b - a
     y_ = y - a
     eps = 1e-6
-    _mis0 = (m < eps) & (m > -eps)
-    _fix = _mis0 + 0.0
-    w = (y_ * (1 - _fix)) / (m + _fix)
+    _bad = (m < eps) & (m > -eps)
+    w = _where(_bad, 0.5, y_) / _where(_bad, 1, m)
     return w
 
 

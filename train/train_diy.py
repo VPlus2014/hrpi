@@ -1,5 +1,7 @@
+from copy import deepcopy
 from datetime import datetime
 import os
+
 
 # os.environ["TORCH_USE_CUDA_DSA"] = "1"
 # os.environ["CUDA_LAUNCH_BLOCKING"] = "0"
@@ -27,8 +29,6 @@ import torch
 from pathlib import Path
 from torch.utils.tensorboard.writer import SummaryWriter
 from tqdm import tqdm
-from environments_th import NavigationEnv, EvasionEnv
-from environments_th.nav_tracking import NavTrackingEnv
 from agents import PPOContinuous
 from decimal import getcontext
 from tools import as_np, as_tsr, init_seed, ConextTimer
@@ -36,30 +36,34 @@ from tools import as_np, as_tsr, init_seed, ConextTimer
 
 def main():
     getcontext().prec = 4
+    from envs_np.utils.log_ext import LogConfig
+    from envs_np.utils import log_ext
+    from envs_np.wrappers.unit_action import UnitActionWrapper
+    from envs_np.nav_heading import NavHeadingEnv as envcls
 
-    from environments_th.utils import log_ext
-
-    ROOT_DIR = Path(__file__).parent
-    nenvs = 4000
-    envcls = NavTrackingEnv
-    env_out_torch = False
-    env_max_steps = 500
+    nenvs = 1000
+    sim_step_size_ms = 20
+    agent_step_size_ms = 100
+    env_desc_max_steps = 500
+    max_sim_ms = env_desc_max_steps * agent_step_size_ms
     # env_out_mode = "pytorch" if env_out_torch else "numpy"
-    env_device = [
+    device = [
         torch.device("cpu"),
-        torch.device("cuda" if torch.cuda.is_available() else "cpu"),
+        torch.device("cuda:0" if torch.cuda.is_available() else "cpu"),
     ][-1]
-    th_float = torch.float32
+    th_float = torch.float64
     algoname = "ppo"
     max_train_episodes = int(1e6)
     batch_size = 1000
     buffer_size = 2 * (batch_size + nenvs)  # 回放池最大轨迹数
     RUNS_DIR = ROOT_DIR / "runs"
+
     TASK_DIR = RUNS_DIR / "{}_{}_{}".format(
         envcls.__name__,
         algoname,
         datetime.now().strftime("%Y%m%d_%H%M%S"),
     )
+    render_dir = TASK_DIR / "acmi"
     WEIGHTS_DIR = TASK_DIR / "weights"
     WEIGHTS_DIR.mkdir(parents=True, exist_ok=True)
     pretrn_dir = TASK_DIR / "NavigationEnv_ppo_20250604_191442" / "weights"
@@ -70,30 +74,29 @@ def main():
     )
     init_seed(10086)
 
+    render_mode = [
+        None,
+        "tacview_remote",
+        "tacview_local",
+    ][-1]
+
     writer = SummaryWriter(TASK_DIR / "tb")
     radius = 2000
     train_env = envcls(
-        agent_step_size_ms=50,
-        sim_step_size_ms=50,
-        max_sim_ms=50 * env_max_steps,
-        waypoints_total_num=10,
-        waypoints_visible_num=3,
-        waypoints_dR_ratio_min=1e-2,
-        waypoints_dR_ratio_max=2e-2,
-        position_min_limit=[-radius, -radius, -radius],
-        position_max_limit=[radius, radius, radius],
-        render_mode="tacview",
-        render_dir=TASK_DIR / "acmi",
         num_envs=nenvs,
-        device=env_device,
-        dtype=th_float,
-        out_torch=env_out_torch,
-        logname=log_ext.LogConfig(
-            f"{envcls.__name__}",
-            level=logging.DEBUG,
-            file_path=str(TASK_DIR / "env.log"),
+        agent_step_size_ms=agent_step_size_ms,
+        sim_step_size_ms=sim_step_size_ms,
+        max_sim_ms=max_sim_ms,
+        waypoints_total_num=1,
+        waypoints_visible_num=1,
+        pos_e_nvec=[100, 100, 100],
+        render_mode=render_mode,
+        render_dir=render_dir,
+        easy_mode=False,
+        debug=False,
+        logconfig=LogConfig(
+            __name__, level=logging.DEBUG, file_path=str(TASK_DIR / "env.log")
         ),
-        version="2.0",
     )
     # train_env = EvasionEnv(
     #     agent_step_size_ms=50,
@@ -129,10 +132,9 @@ def main():
         adam_eps=1e-5,
         num_envs=train_env.num_envs,
         writer=writer,
-        device=env_device,
+        device=device,
         dtype=th_float,
-        env_out_torch=env_out_torch,
-        max_steps=env_max_steps,
+        max_steps=env_desc_max_steps,
         logr=log_ext.LogConfig(
             f"{algoname}_agent",
             level=logging.DEBUG,
@@ -153,12 +155,14 @@ def main():
             except Exception as e:
                 logr.info(f"Failed to load pretrain {model.__class__.__name__}: {e}")
 
-    tmr_env = ConextTimer("Sim")
-    tmr_learn = ConextTimer("Learn")
+    tmr_sim = ConextTimer("Sim")
     tmr_infer = ConextTimer("Infer")
-    wallt_sim = 0.0
-    wallt_learn = 0.0
-    wallt_infer = 0.0
+    tmr_buffer = ConextTimer("Buffer")
+    tmr_learn = ConextTimer("Learn")
+    tmrs = [tmr_sim, tmr_infer, tmr_buffer, tmr_learn]
+    logr.info(
+        "Timers:\n" + "\n".join([f"[{i}] {tmr.name}" for i, tmr in enumerate(tmrs)])
+    )
 
     # train
     progress_bar = tqdm(total=max_train_episodes, desc="Train")
@@ -173,7 +177,7 @@ def main():
     _learn_k0 = 1
     _tmp_t00 = time.time()
     try:
-        with tmr_env:
+        with tmr_sim:
             obs, _ = train_env.reset()
         while progress_bar.n < max_train_episodes:
             with tmr_learn:
@@ -203,28 +207,32 @@ def main():
             with tmr_infer:
                 # obs_norm = normalize(obs, low, high)
                 act, act_log_prob = agent.choose_action(obs)
+                act_np = as_np(act)
 
-            with tmr_env:
-                obs_next, rew, terminated, truncated, info = train_env.step(act)
-                train_env.render()
+            with tmr_sim:
+                obs_next, rew, term, trunc, info = train_env.step(act_np)
+                done = term | trunc
+                msk2reset = done.ravel()
+                anydone = done.any()
+                if anydone:
+                    obs_, _ = train_env.reset(msk2reset)
 
-            with tmr_learn:
-                final_obs = info[train_env.KEY_FINAL_OBS]
-
+            with tmr_buffer:
                 agent.post_act(
                     obs=obs,
                     obs_next=obs_next,
-                    final_obs=final_obs,
                     act=act,
                     act_log_prob=act_log_prob,
                     rew=rew,
-                    terminated=terminated,
-                    truncated=truncated,
+                    terminated=term,
+                    truncated=trunc,
                     global_step=progress_bar.n,
                 )
 
-                obs = obs_next
-                done = truncated | truncated
+            with tmr_infer:
+                obs = deepcopy(obs_next)
+                if anydone:
+                    obs[msk2reset, :] = obs_
 
             global_step += 1
 
@@ -232,19 +240,15 @@ def main():
             _echo_k = int((_tmp_t1 - _tmp_t00) / echo_interval)
             if _echo_k > _echo_k0:
                 _echo_k0 = _echo_k
-                wallt_sim = tmr_env.t
-                wallt_infer = tmr_infer.t
-                wallt_learn = tmr_learn.t
-                tms = np.asarray([wallt_sim, wallt_infer, wallt_learn])
-                tms_ratio = tms / np.sum(tms)
+                wts = np.asarray([tmr.t for tmr in tmrs])
+                wts_ratio = wts / max(np.sum(wts), 1e-6)
+                wts_str = ":".join([f"{w:.0%}" for w in wts_ratio])
                 sec_per_batch = (_tmp_t1 - _tmp_t00) / global_step
                 ms_per_batch = int(sec_per_batch * 1000)
                 progress_bar.set_postfix(
                     {
+                        "t_ratio": f"{wts_str}",  # sim
                         "ms/B": f"{ms_per_batch}",
-                        "Sim": f"{tms_ratio[0]:.1%}",  # sim
-                        "Infer": f"{tms_ratio[1]:.1%}",  # infer
-                        "Learn": f"{tms_ratio[2]:.1%}",  # learn
                     }
                 )
 

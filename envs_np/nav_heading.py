@@ -92,15 +92,15 @@ class NavHeadingEnv(VEnv):
 
     def __init__(
         self,
-        agent_step_size_ms: int,  # 决策步长(ms)
+        agent_step_size_ms: int = 100,  # 决策步长(ms)
         sim_step_size_ms: int = 20,  # 仿真步长(ms)
         max_sim_ms: int = 600_000,  # 单局最大仿真时长(ms)
         xmax: float = 10_000,  # X方向活动半径
         ymax: float | None = None,  # Y方向活动半径
         zmax: float = 5_000,  # 高度活动半径
         pos_e_nvec: Sequence[int] | int = 100,  # XYZ位置离散化个数 linsapce
-        V0: float = 240,  # 初始速度, m/s
-        Vmin: float | None = None,  # 最小速度, m/s
+        V0: float = 240.0,  # 初始速度, m/s
+        Vmin: float = 100.0,  # 最小速度, m/s
         Vmax: float | None = None,  # 最大速度, m/s
         nx_max: float = 2.0,  # 最大X方向过载, unit:G
         nx_min: float = -0.5,  # 最小X方向过载, unit:G
@@ -166,7 +166,7 @@ class NavHeadingEnv(VEnv):
         self._waypoints_total_num = waypoints_total_num  # 有效路径点总数
 
         # vel
-        eps = 1e-6
+        eps = 1e-3
         Vmin = Vmin or (V0 - eps)
         Vmax = Vmax or (V0 + eps)
         assert Vmin < V0 < Vmax, (
@@ -213,7 +213,7 @@ class NavHeadingEnv(VEnv):
         ]
         """离散化位置的索引表"""
 
-        self._region_diam = np.linalg.norm((xmax, ymax, zmax))
+        self._region_diam = np.linalg.norm((xmax, ymax, zmax)) * 2
         # pose
         self._qew_range = spaces.Box(
             low=-1.0,
@@ -394,6 +394,7 @@ class NavHeadingEnv(VEnv):
                         low=-pos_span,
                         high=pos_span,
                         shape=(3,),
+                        dtype=np_ftype,
                     ),
                 ),
             ]
@@ -412,9 +413,10 @@ class NavHeadingEnv(VEnv):
         self._action_space = spaces.Dict(_act_spc)
 
         diam = float(self._region_diam)
-        tc_p_dmax = diam * 0.8
+        tc_p_dmax = diam * 0.8  # 过远
         tc_p_dmin = min(100, diam * 1e-2)  # 抵达距离
         self._tc_p_dmin = tc_p_dmin
+        self._tc_p_dmax = tc_p_dmax
 
         # !!!deffine reward functions
         self._reward_fns: dict[str, BaseRewardFn] = {
@@ -429,6 +431,7 @@ class NavHeadingEnv(VEnv):
                         use_dR=False, use_quadratic=True, weight=100 / diam
                     ),
                     RF_GoalReach(min_distance_m=tc_p_dmin, weight=1000),
+                    RF_Time(weight=-0.01),  # 代价
                 ]
             )
         }
@@ -492,7 +495,7 @@ class NavHeadingEnv(VEnv):
             npad=self._waypoints_visible_num - 1,
             nvec=self._pos_e_nvec,
             disc_table=self._pos_e_disc_table,
-            use_random=False,
+            use_random=True,
             dtype=self.dtype,  # @generate_navigation_points
             disc_max=1,
             seed=seed,
@@ -654,6 +657,11 @@ class NavHeadingEnv(VEnv):
         return self.goal_cur_reached & (
             self._waypoint_index[..., 0, 0:1] >= self._waypoints_total_num - 1
         )
+
+    @DIG_property
+    def goal_is_far_away(self) -> BoolNDArr:
+        """[DIG] 是否距离过远, shape=(N,1)"""
+        return self.goal_distance > self._tc_p_dmax
 
     @DIG_property
     def goal_position(self) -> Float_NDArr:

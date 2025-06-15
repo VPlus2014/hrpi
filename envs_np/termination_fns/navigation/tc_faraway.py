@@ -24,4 +24,4 @@ class TC_AwayFromGoal(BaseTerminationFn):
         pass
 
     def forward(self, env: NavHeadingEnv, unit, **kwargs) -> np.ndarray:
-        return env.goal_distance >= self.distance_threshold
+        return env.goal_is_far_away

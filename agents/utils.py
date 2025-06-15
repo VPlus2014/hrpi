@@ -55,3 +55,41 @@ class Normalization:
         x = (x - self.running_ms.mean) / (self.running_ms.std + 1e-8)
 
         return x
+
+
+def affcmb(a, b, t):
+    """Affine combination of two tensors.
+
+    $$
+    (1-t) * a + t * b
+    $$
+
+    Args:
+        a: First scalar or tensor, shape=(...,d).
+        b: Second scalar or tensor, shape=(...,d).
+        t: Weights for the affine combination, shape=(..., 1|dims).
+
+    Returns:
+        Affine combination of a and b, shape=(...,d).
+    """
+    return a + (b - a) * t
+
+
+def affcmb_inv(a, b, y):
+    """
+    仿射组合的逆运算,含除零处理
+
+    Args:
+        a: First scalar or tensor, shape=(...,d).
+        b: Second scalar or tensor, shape=(...,d).
+        y: a+w*(b-a), shape=(..., 1)
+
+    Returns:
+        t: 仿射系数, shape=(...,d).
+    """
+    m = b - a
+    y_ = y - a
+    eps = 1e-6
+    _bad = (m < eps) & (m > -eps)
+    w = torch.where(_bad, 0.5, y_) / torch.where(_bad, 1, m)
+    return w

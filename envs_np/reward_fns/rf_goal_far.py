@@ -10,16 +10,16 @@ if TYPE_CHECKING:
 from .proto4rf import BaseRewardFn, RewardType
 
 
-class RF_GoalReach(BaseRewardFn):
+class RF_GoalFar(BaseRewardFn):
     def __init__(
         self,
-        min_distance_m: float,  # 抵达判定距离阈值
+        max_distance_m: float,  # 抵达判定距离阈值
         **kwargs,
     ) -> None:
-        """单点抵达事件奖励"""
+        """距离过远事件奖励"""
         super().__init__(**kwargs)
-        self._params.update({"min_distance_m": min_distance_m})
-        self.min_distance_m = min_distance_m
+        self._params.update({"min_distance_m": max_distance_m})
+        self.min_distance_m = max_distance_m
 
     def reset(
         self,
@@ -30,5 +30,7 @@ class RF_GoalReach(BaseRewardFn):
         pass
 
     def forward(self, env: NavHeadingEnv, unit, **kwargs) -> RewardType:
-        reward = env.goal_cur_reached * 1.0
+        # distance = env.goal_distance
+        # reached = distance <= self.min_distance_m
+        reward = -1.0 * env.goal_is_far_away
         return reward

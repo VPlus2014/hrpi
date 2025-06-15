@@ -32,11 +32,11 @@ def main():
     use_cuda = False
     dv = "cuda" if torch.cuda.is_available() and use_cuda else "cpu"
     dtp = torch.float32
-    nenvs = 1
-    total_frames = int(1e3)
+    nenvs = 1024 * 4
+    total_frames = int(1e6)
     bufsz = 2 * nenvs
     buftmax_step = 100
-    global_max_steps = total_frames // nenvs
+    global_max_steps = max(1, total_frames // nenvs)
     env_sim_dt_ms = 10
     env_desc_ms = 5 * env_sim_dt_ms
     env_desc_max_steps = 1000
