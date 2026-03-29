@@ -1,0 +1,284 @@
+from copy import deepcopy
+from datetime import datetime
+import os
+from gymnasium import spaces
+
+# os.environ["TORCH_USE_CUDA_DSA"] = "1"
+# os.environ["CUDA_LAUNCH_BLOCKING"] = "0"
+
+
+def _setup():  # 将项目根节点加入 sys.path
+    import sys
+    from pathlib import Path
+
+    __FILE = Path(__file__)
+    ROOT = __FILE.parents[1]  # /../..
+    if str(ROOT) not in sys.path:
+        sys.path.append(str(ROOT))
+    return ROOT
+
+
+ROOT_DIR = _setup()
+
+import logging
+import time
+import traceback
+from typing import Sequence, cast
+import numpy as np
+import torch
+from pathlib import Path
+from torch.utils.tensorboard.writer import SummaryWriter
+from tqdm import tqdm
+from agents import PPOContinuous
+from decimal import getcontext
+from util_tools import as_np, as_tsr, init_seed, ConextTimer
+
+
+def main():
+    getcontext().prec = 4
+    from codes.envs_np.utils.log_ext import LogConfig
+    from codes.envs_np.utils import log_ext
+    from codes.envs_np.wrappers import LinspaceActionWrapper
+    from codes.envs_np.nav_heading import NavHeadingEnv as envcls
+
+    nenvs = 1000
+    sim_step_size_ms = 20
+    agent_step_size_ms = 100
+    env_desc_max_steps = 500
+    max_sim_ms = env_desc_max_steps * agent_step_size_ms
+    # env_out_mode = "pytorch" if env_out_torch else "numpy"
+    device = [
+        torch.device("cpu"),
+        torch.device("cuda:0" if torch.cuda.is_available() else "cpu"),
+    ][-1]
+    th_float = torch.float64
+    algoname = "ppo"
+    max_train_episodes = int(1e6)
+    batch_size = 1000
+    buffer_size = 2 * (batch_size + nenvs)  # 回放池最大轨迹数
+    RUNS_DIR = ROOT_DIR / "runs"
+
+    TASK_DIR = RUNS_DIR / "{}_{}_{}".format(
+        envcls.__name__,
+        algoname,
+        datetime.now().strftime("%Y%m%d_%H%M%S"),
+    )
+    render_dir = TASK_DIR / "acmi"
+    WEIGHTS_DIR = TASK_DIR / "weights"
+    WEIGHTS_DIR.mkdir(parents=True, exist_ok=True)
+    pretrn_dir = TASK_DIR / "NavigationEnv_ppo_20250604_191442" / "weights"
+    logr = log_ext.reset_logger(
+        f"{__name__}",
+        level=logging.DEBUG,
+        file_path=str(TASK_DIR / "main.log"),
+    )
+    init_seed(10086)
+
+    render_mode = [
+        None,
+        "tacview_remote",
+        "tacview_local",
+    ][-1]
+
+    agent_writer = SummaryWriter(TASK_DIR / "tb")
+    env_sw = agent_writer
+    train_env = envcls(
+        num_envs=nenvs,
+        agent_step_size_ms=agent_step_size_ms,
+        sim_step_size_ms=sim_step_size_ms,
+        max_sim_ms=max_sim_ms,
+        waypoints_total_num=1,
+        waypoints_visible_num=1,
+        pos_e_nvec=[100, 100, 100],
+        render_mode=render_mode,
+        render_dir=render_dir,
+        easy_mode=False,
+        debug=True,
+        writer=env_sw,
+        logconfig=LogConfig(
+            __name__, level=logging.DEBUG, file_path=str(TASK_DIR / "env.log")
+        ),
+    )
+    train_env = LinspaceActionWrapper(train_env, [2, 3, 2, 3])
+
+    # train_env = EvasionEnv(
+    #     agent_step_size_ms=50,
+    #     sim_step_size_ms=10,
+    #     position_min_limit=[-10000, -10000, -10000],
+    #     position_max_limit=[10000, 10000, 0],
+    #     writer=writer,
+    #     render_mode="tacview",
+    #     render_dir=Path.cwd() / "results_2",
+    #     num_envs=100,
+    #     device=torch.device("cuda:0"),
+    #     mode="pytorch",
+    # )
+
+    # agent = PPOContinuous(
+    #     name="planner",
+    #     observation_space=train_env.observation_space,
+    #     action_space=train_env.action_space,
+    #     buffer_size=buffer_size,
+    #     learn_batch_size=batch_size,
+    #     mini_batch_size=max(int(batch_size // 8), 1) * 2,
+    #     lr_a=5e-3,
+    #     actor_hidden_sizes=[128, 128, 128],
+    #     lr_c=5e-3,
+    #     critic_hidden_sizes=[128, 128, 128],
+    #     gamma=0.99,
+    #     gae_lambda=0.95,
+    #     epsilon=0.2,
+    #     policy_entropy_coef=0.01,
+    #     use_grad_clip=False,
+    #     use_adv_norm=False,
+    #     repeat=10,
+    #     adam_eps=1e-5,
+    #     num_envs=train_env.num_envs,
+    #     writer=agent_writer,
+    #     device=device,
+    #     dtype=th_float,
+    #     max_steps=env_desc_max_steps,
+    #     logr=log_ext.LogConfig(
+    #         f"{algoname}_agent",
+    #         level=logging.DEBUG,
+    #         file_path=str(TASK_DIR / "agent.log"),
+    #     ).remake(),
+    # )
+    from tianshou.policy import DQNPolicy
+    from tianshou.utils.net.discrete import Actor
+    from tianshou.data.buffer.vecbuf import VectorReplayBuffer
+    rnnhead = torch.nn.LSTM(128, 128, 1)
+
+
+
+    actor = Actor(
+        preprocess_net=rnnhead,
+        action_shape=cast(
+            Sequence[int], cast(spaces.MultiDiscrete, train_env.action_space).nvec
+        ),
+        hidden_sizes=[128, 128],
+    )
+
+    if isinstance(pretrn_dir, Path):
+        for model, fname in [
+            (agent.actor, "actor.pth"),
+            (agent.critic, "critic.pth"),
+        ]:
+            try:
+                model = cast(torch.nn.Module, model)
+                fin = str(pretrn_dir / fname)
+                model.load_state_dict(torch.load(fin))
+                logr.info((f"{model.__class__.__name__}<<", fin))
+            except Exception as e:
+                logr.info(f"Failed to load pretrain {model.__class__.__name__}: {e}")
+
+    tmr_sim = ConextTimer("Sim")
+    tmr_infer = ConextTimer("Infer")
+    tmr_buffer = ConextTimer("Buffer")
+    tmr_learn = ConextTimer("Learn")
+    tmrs = [tmr_sim, tmr_infer, tmr_buffer, tmr_learn]
+    print("Timers:\n" + "\n".join([f"[{i}] {tmr.name}" for i, tmr in enumerate(tmrs)]))
+
+    # train
+    progress_bar = tqdm(total=max_train_episodes, desc="Train")
+    global_step = 0
+    global_episode = 0
+    _save_k0 = 0
+    _save_k = 0
+    echo_interval = 1.0
+    _echo_k0 = 0
+    _echo_k = 0
+    _learn_k = 0
+    _learn_k0 = 1
+    _tmp_t00 = time.time()
+    try:
+        with tmr_sim:
+            obs, _ = train_env.reset()
+        while progress_bar.n < max_train_episodes:
+            with tmr_learn:
+                # 更新智能体
+                _learn_k = global_episode // batch_size
+                if _learn_k > _learn_k0:
+                    assert (
+                        len(agent.replay_buffer) >= batch_size
+                    ), "Replay buffer is too small"
+                    _learn_k0 = _learn_k
+                    agent.update(progress_bar.n)
+
+                # 存储智能体
+                _save_k = progress_bar.n // 1000
+                if _save_k > _save_k0:
+                    _save_k0 = _save_k
+                    # torch.save(agent.actor, WEIGHTS_DIR / "actor.pt")
+                    for model, fname in [
+                        (agent.actor, "actor.pth"),
+                        (agent.critic, "critic.pth"),
+                    ]:
+                        model = cast(torch.nn.Module, model)
+                        fo = str(WEIGHTS_DIR / fname)
+                        torch.save(model.state_dict(), fo)
+                        logr.debug((f"{model.__class__.__name__}>>", fo))
+
+            with tmr_infer:
+                # obs_norm = normalize(obs, low, high)
+                act, act_log_prob = agent.choose_action(obs)
+                act_np = as_np(act)
+
+            with tmr_sim:
+                obs_next, rew, term, trunc, info = train_env.step(act_np)
+                done = term | trunc
+                msk2reset = done.ravel()
+                anydone = done.any()
+                if anydone:
+                    obs_, _ = train_env.reset(msk2reset)
+
+            with tmr_buffer:
+                agent.post_act(
+                    obs=obs,
+                    obs_next=obs_next,
+                    act=act,
+                    act_log_prob=act_log_prob,
+                    rew=rew,
+                    terminated=term,
+                    truncated=trunc,
+                    global_step=progress_bar.n,
+                )
+
+            with tmr_infer:
+                obs = deepcopy(obs_next)
+                if anydone:
+                    obs[msk2reset, :] = obs_
+
+            global_step += 1
+
+            _tmp_t1 = time.time()
+            _echo_k = int((_tmp_t1 - _tmp_t00) / echo_interval)
+            if _echo_k > _echo_k0:
+                _echo_k0 = _echo_k
+                wts = np.asarray([tmr.t for tmr in tmrs])
+                wts_ratio = wts / max(np.sum(wts), 1e-6)
+                wts_str = ":".join([f"{w:.0%}" for w in wts_ratio])
+                sec_per_batch = (_tmp_t1 - _tmp_t00) / global_step
+                ms_per_batch = int(sec_per_batch * 1000)
+                progress_bar.set_postfix(
+                    {
+                        "t_ratio": f"{wts_str}",  # sim
+                        "ms/B": f"{ms_per_batch}",
+                    }
+                )
+
+            ndone = done.sum().item()
+            if ndone > 0:
+                global_episode += ndone
+                progress_bar.update(ndone)
+    except KeyboardInterrupt:
+        pass
+    except Exception as e:
+        logr.error(f"Exception: {e}\n{traceback.format_exc()}")
+    finally:
+        progress_bar.close()
+        train_env.close()
+
+
+if __name__ == "__main__":
+    main()

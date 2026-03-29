@@ -1,0 +1,3 @@
+from ..proto4tc import BaseTerminationFn
+from .aircraft_shotdown_termination_fn import AircraftShotdownTerminationFn
+from .aircraft_survival_termination_fn import AircraftSurvivalTerminationFn

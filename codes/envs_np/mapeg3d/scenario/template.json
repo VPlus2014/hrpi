@@ -1,0 +1,48 @@
+{
+    "center_latitude": 39.9042,
+    "center_longitude": 116.4074,
+    "center_altitude": 10000,
+    "plane": [
+        {
+            "acmi_id": "0x0001",
+            "acmi_name": "F-16",
+            "acmi_color": "Blue",
+            "call_sign": "Alpha1",
+            "missile_limit": 4,
+            "decoy_limit": 2,
+            "initial_position": {
+                "latitude": 39.9142,
+                "longitude": 116.4174,
+                "altitude": 10500
+            }
+        },
+        {
+            "acmi_id": "0x0002",
+            "acmi_color": "Blue",
+            "missile_limit": 6,
+            "decoy_limit": 3,
+            "initial_position": {
+                "latitude": 39.8942,
+                "longitude": 116.3974,
+                "altitude": 11500
+            }
+        }
+    ],
+    "missile": [
+        {
+            "acmi_id": "0x1003",
+            "acmi_color": "Red",
+            "initial_position": {
+                "latitude": 39.8942,
+                "longitude": 116.3974,
+                "altitude": 11500
+            }
+        }
+    ],
+    "ode_step_size": 0.010,
+    "special_event_intervals": [
+        1,
+        2,
+        5
+    ]
+}

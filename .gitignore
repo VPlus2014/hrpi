@@ -1,0 +1,15 @@
+# Ignore the output directory
+.vscode/
+.idea/
+__pycache__/
+
+runs/
+outputs/
+results/
+
+tmp/
+tmp_*
+
+CasADi_MPC_MHE_Python/
+mpc.pytorch/
+build/
