@@ -3,6 +3,8 @@
 .idea/
 __pycache__/
 
+/codes/dreamerv3/
+
 runs/
 outputs/
 results/
