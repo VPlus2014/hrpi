@@ -1,5 +1,7 @@
 # 概述
 
+- 为了兼容原版dreamerV3依赖的jax，使用了 CUDA-12.1+CUDNN9.1
+
 ## 框架
 
 基于 Gymnasium, 追逃场景下的固定翼飞行器组导航控制
@@ -187,3 +189,4 @@ $$
 ###
 
 ```((pred)|(target)|(reward))_total```
+

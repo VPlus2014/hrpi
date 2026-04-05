@@ -2,6 +2,10 @@
 世界模型数据收集器
 与NPSyncVecEnv集成，收集训练数据
 """
+from __future__ import annotations
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    import gymnasium as gym
 import torch
 import numpy as np
 from typing import Optional, Dict, Any, Tuple
@@ -64,8 +68,8 @@ class WorldModelCollector:
 
     def __init__(
         self,
-        env,  # NPSyncVecEnv实例
-        device: str = "cuda" if torch.cuda.is_available() else "cpu",
+        env: gym.Env,  # NPSyncVecEnv实例
+        device: str|torch.device = "cuda" if torch.cuda.is_available() else "cpu",
         normalize_obs: bool = True,
         obs_mean: Optional[np.ndarray] = None,
         obs_std: Optional[np.ndarray] = None,

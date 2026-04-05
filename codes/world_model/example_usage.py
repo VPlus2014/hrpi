@@ -246,8 +246,11 @@ def simple_inference_example():
     """简单的推理示例 - 仅使用世界模型"""
     from codes.envs_np import NavHeadingEnv
 
+    bsz = 2
+    horizon = 5
+
     # 创建环境
-    env = NavHeadingEnv(num_envs=2, agent_step_size_ms=100)
+    env = NavHeadingEnv(num_envs=bsz, agent_step_size_ms=100)
 
     # 创建世界模型
     world_model = create_world_model_from_env(env)
@@ -256,7 +259,7 @@ def simple_inference_example():
     world_model.eval()
 
     # 初始化状态
-    state = world_model.initial_state(batch_size=2, device=device)
+    state = world_model.initial_state(batch_size=bsz, device=device)
 
     # 收集一些数据
     collector = WorldModelCollector(env=env, device=device)
@@ -276,7 +279,7 @@ def simple_inference_example():
         print(f"奖励预测形状: {outputs.reward_pred.shape}")
 
         # 想象未来
-        imagined_actions = torch.randn(5, 2, env.single_action_space.shape[0], device=device)
+        imagined_actions = torch.randn(horizon, bsz, env.single_action_space.shape[0], device=device)
         imagined_states, imagined_outputs = world_model.imagine(state, imagined_actions)
 
         print(f"\n想象序列长度: {imagined_states.h.shape[0]}")

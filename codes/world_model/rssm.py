@@ -4,11 +4,12 @@ Dreamerv3的核心组件，用于建模环境的潜在动态
 """
 
 from dataclasses import dataclass
-from typing import Tuple, Optional
+from typing import Tuple, Optional, Union
 import torch
 import torch.nn as nn
 from torch import Tensor
 
+_DeviceLike = Union[str, torch.device]
 
 @dataclass
 class RSSMState:
@@ -21,7 +22,7 @@ class RSSMState:
         """分离梯度"""
         return RSSMState(h=self.h.detach(), z=self.z.detach())
 
-    def to(self, device):
+    def to(self, device:_DeviceLike):
         """移动到指定设备"""
         return RSSMState(h=self.h.to(device), z=self.z.to(device))
 
@@ -64,6 +65,7 @@ class RSSM(nn.Module):
             nn.Linear(hidden_dim, hidden_dim),
             nn.SiLU(),
             nn.Linear(hidden_dim, latent_dim * 2),  # mean and logstd
+            nn.Tanh(),
         )
 
         # 后验网络: 从隐状态和观测嵌入预测潜在变量分布
@@ -71,6 +73,7 @@ class RSSM(nn.Module):
             nn.Linear(hidden_dim + obs_embed_dim, hidden_dim),
             nn.SiLU(),
             nn.Linear(hidden_dim, latent_dim * 2),  # mean and logstd
+            nn.Tanh(),
         )
 
         self._init_weights()
@@ -114,6 +117,9 @@ class RSSM(nn.Module):
 
         # 预测先验分布
         prior_out = self.prior_net(h)
+        # tag = torch.isfinite(prior_out)
+        # if not tag.all():
+        #     raise ValueError(f"nan or inf found in prior_out: {prior_out[~tag]}")
         prior_mean, prior_logstd = prior_out.chunk(2, dim=-1)
 
         return prior_mean, prior_logstd
@@ -137,6 +143,9 @@ class RSSM(nn.Module):
         # 拼接隐状态和观测嵌入
         posterior_input = torch.cat([state.h, obs_embed], dim=-1)
         posterior_out = self.posterior_net(posterior_input)
+        # tag = torch.isfinite(posterior_out)
+        # if not tag.all():
+        #     raise ValueError(f"nan or inf found in prior_out: {posterior_out[~tag]}")
         posterior_mean, posterior_logstd = posterior_out.chunk(2, dim=-1)
 
         return posterior_mean, posterior_logstd

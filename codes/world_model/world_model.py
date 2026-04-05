@@ -103,6 +103,8 @@ class WorldModel(nn.Module):
         T, B = obs.shape[:2]
         device = obs.device
 
+        assert action.shape[:2] == (T,B)
+
         # 初始化状态
         if state is None:
             state = self.initial_state(B, device)
@@ -116,7 +118,7 @@ class WorldModel(nn.Module):
 
         for t in range(T):
             obs_t = obs_embed[t] if obs_embed.dim() == 3 else obs_embed
-            action_t = action[t] if action.dim() == 2 else action
+            action_t = action[t]
 
             # 观察更新
             new_state = state  # 使用上一个状态

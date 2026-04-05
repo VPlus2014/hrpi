@@ -1,4 +1,5 @@
 from __future__ import annotations
+from gymnasium.vector import VectorEnv, SyncVectorEnv
 from copy import deepcopy
 from typing import TYPE_CHECKING, Dict, Union
 from abc import ABC, abstractmethod
@@ -24,7 +25,6 @@ EnvIndexType = Union[ndarray, NDArray[np.intp], list[int], tuple[int], slice]
 EnvMaskType = Union[
     ndarray, NDArray[np.bool_], list[bool], tuple[bool], type(Ellipsis), slice
 ]
-from gymnasium.vector import VectorEnv, SyncVectorEnv
 
 _SliceAll = slice(None)
 
@@ -171,7 +171,8 @@ class NPSyncVecEnv(SyncVectorEnv, ABC):
                 elif mask.ndim == tgt.ndim + 1:
                     msk = mask.squeeze(-1)
                 else:
-                    raise ValueError("mask shape mismatch", mask.shape, tgt.shape)
+                    raise ValueError("mask shape mismatch",
+                                     mask.shape, tgt.shape)
 
                 msk = np.logical_and(
                     tgt, msk
@@ -206,7 +207,9 @@ class NPSyncVecEnv(SyncVectorEnv, ABC):
         mask = self.proc_to_mask(mask)
         self._sim_time_s[mask] = self._sim_time_ms[mask] * 1e-3
 
-    def reset(self, *, seed, options) -> tuple[NDArray, dict[str, Any]]:
+    def reset(self, *, 
+              seed: Optional[Union[int, List[int]]] = None,
+              options: dict | None = None) -> tuple[NDArray, dict[str, Any]]:
         options = options or {}
         mask = options.get(self.OPTION_KEY_MASK, None)
         mask = self.proc_to_mask(mask)

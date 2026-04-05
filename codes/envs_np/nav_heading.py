@@ -804,8 +804,7 @@ class NavHeadingEnv(NPSyncVecEnv):
 
         rew, rews_meta = self.__get_rew()
         rews_arr = []
-        if self.use_multi_reward:
-            _0 = np.zeros_like(rew)
+        _0 = np.zeros_like(rew)
         for rfname, rew_ in rews_meta.items():
             self._rew_sum[rfname] += rew_
             rews_arr.append(np.reshape(rew_ + _0, (-1, 1)))
