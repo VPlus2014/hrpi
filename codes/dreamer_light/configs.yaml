@@ -1,0 +1,64 @@
+defaults:
+
+  logdir: ~/logdir/{timestamp}
+  seed: 0
+  batch_size: 2
+  batch_length: 16
+  replay_context: 1
+
+  dyn:
+    deter: 1024
+    hidden: 512
+    stoch: 32
+    classes: 32
+    norm: rms
+    act: gelu
+    dynlayers: 1
+    blocks: 4
+    free_nats: 1.0
+
+  enc:
+    units: 512
+    norm: rms
+    act: gelu
+    layers: 2
+
+  dec:
+    units: 512
+    norm: rms
+    act: gelu
+    layers: 2
+
+  rewhead:
+    units: 512
+    norm: rms
+    act: gelu
+    layers: 2
+    bins: 255
+
+  conhead:
+    units: 512
+    norm: rms
+    act: gelu
+    layers: 2
+
+  policy:
+    units: 512
+    norm: rms
+    act: gelu
+    layers: 2
+    minstd: 0.1
+    maxstd: 1.0
+
+  value:
+    units: 512
+    norm: rms
+    act: gelu
+    layers: 2
+    bins: 255
+
+  jax:
+    platform: cpu  # or cuda
+    compute_dtype: float32
+    train_devices: [0]
+    prealloc: False

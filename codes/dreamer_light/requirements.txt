@@ -1,0 +1,6 @@
+embodied
+jax
+ninjax
+elements
+einops
+numpy

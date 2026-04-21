@@ -25,6 +25,16 @@ class iLQR(NNModule):
         device: DeviceLike = "cpu",
         dtype=torch.float32,
     ):
+        """
+        初始化iLQR(迭代线性二次调节器)策略
+
+        Args:
+            model: 神经网络模型
+            horizon: 规划时间步长，默认为10
+            lr: 学习率，默认为0.1
+            device: 运行设备，默认为"cpu"
+            dtype: 数据类型，默认为torch.float32
+        """
         super().__init__()
         self.T = horizon = int(horizon)
         assert horizon > 0, ("horizon must be a positive integer", horizon)

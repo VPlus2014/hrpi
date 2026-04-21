@@ -1,0 +1,1 @@
+# Dreamer Light: Lightweight DreamerV3 for Vectorized Observations
